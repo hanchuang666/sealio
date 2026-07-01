@@ -1,0 +1,29 @@
+{
+  "name": "sealio",
+  "version": "0.1.0",
+  "description": "Desktop stamp placement tool for PDF and images.",
+  "author": "Sealio",
+  "private": true,
+  "scripts": {
+    "dev": "PATH=$HOME/.cargo/bin:$PATH tauri dev",
+    "dev:vite": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "package:mac": "scripts/package-mac-tauri.sh",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^4.5.3",
+    "typescript": "^5.3.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "pdfjs-dist": "3.11.174",
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^18.0.28",
+    "@types/react-dom": "^18.0.11"
+  }
+}
