@@ -9,6 +9,7 @@
     "dev:vite": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "package:mac": "scripts/package-mac-tauri.sh",
+    "package:windows": "tauri build --bundles nsis",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

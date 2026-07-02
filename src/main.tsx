@@ -270,6 +270,7 @@ function App() {
   const [zoomInputValue, setZoomInputValue] = React.useState('92');
   const [isExporting, setIsExporting] = React.useState(false);
   const [status, setStatus] = React.useState('准备就绪');
+  const [pendingCloseDocumentId, setPendingCloseDocumentId] = React.useState<string | null>(null);
   const [dragOverPage, setDragOverPage] = React.useState<number | null>(null);
   const [stampDragPreview, setStampDragPreview] = React.useState<{ stampId: string; x: number; y: number } | null>(null);
   const [draggingDocumentId, setDraggingDocumentId] = React.useState<string | null>(null);
@@ -328,6 +329,9 @@ function App() {
     placementContextMenu && activeDocumentId
       ? placements.find((item) => item.id === placementContextMenu.placementId && item.documentId === activeDocumentId) ?? null
       : null;
+  const pendingCloseDocument = pendingCloseDocumentId
+    ? documents.find((item) => item.id === pendingCloseDocumentId) ?? null
+    : null;
   const canCreateSeamStamp = Boolean(documentFile?.kind === 'pdf' && documentFile.pages.length > 1 && contextPlacement);
 
   React.useEffect(() => {
@@ -916,15 +920,19 @@ function App() {
     setStatus(`已定位到第 ${pageNumber} 页`);
   }
 
-  function closeDocument(documentId: string, event: React.MouseEvent<HTMLElement>) {
+  function requestCloseDocument(documentId: string, event: React.MouseEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
-    const targetDocument = documents.find((item) => item.id === documentId);
-    if (targetDocument && dirtyDocumentIds.has(documentId)) {
-      const confirmed = window.confirm(`"${targetDocument.name}" 有未导出的改动，确定要关闭吗？`);
-      if (!confirmed) return;
+    if (dirtyDocumentIds.has(documentId)) {
+      setPendingCloseDocumentId(documentId);
+      return;
     }
 
+    performCloseDocument(documentId);
+  }
+
+  function performCloseDocument(documentId: string) {
+    const targetDocument = documents.find((item) => item.id === documentId);
     const index = documents.findIndex((item) => item.id === documentId);
     const nextDocuments = documents.filter((item) => item.id !== documentId);
     const shouldSwitchActive = documentId === activeDocumentId || !nextDocuments.some((item) => item.id === activeDocumentId);
@@ -938,6 +946,7 @@ function App() {
       setActivePageNumber(1);
       setSelectedPlacementId(null);
     }
+    setPendingCloseDocumentId((current) => (current === documentId ? null : current));
     setStatus(targetDocument ? `已关闭 ${targetDocument.name}` : '已关闭文件');
   }
 
@@ -1080,7 +1089,7 @@ function App() {
               <button
                 type="button"
                 className="file-tab-close"
-                onClick={(event) => closeDocument(item.id, event)}
+                onClick={(event) => requestCloseDocument(item.id, event)}
                 aria-label={`关闭 ${item.name}`}
                 title={`关闭 ${item.name}`}
               >
@@ -1367,6 +1376,30 @@ function App() {
             </div>
           );
         })()}
+
+      {pendingCloseDocument && (
+        <div className="modal-backdrop" onClick={() => setPendingCloseDocumentId(null)}>
+          <section className="confirm-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <header className="confirm-modal-header">
+              <h2>关闭文件？</h2>
+              <p>“{pendingCloseDocument.name}” 有未导出的改动，关闭后这些改动不会保留。</p>
+            </header>
+            <div className="confirm-modal-actions">
+              <button type="button" onClick={() => setPendingCloseDocumentId(null)} title="取消关闭文件">
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger-action"
+                onClick={() => performCloseDocument(pendingCloseDocument.id)}
+                title="确认关闭当前文件"
+              >
+                确认关闭
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <footer className="statusbar">
         <span>
