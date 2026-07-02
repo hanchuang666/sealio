@@ -41,6 +41,7 @@ button {
   background: #191b20;
   border-bottom: 1px solid #2a2d34;
   -webkit-app-region: drag;
+  user-select: none;
 }
 
 .window-spacer {
@@ -92,6 +93,7 @@ button {
   padding: 6px 14px;
   background: #20232a;
   border-bottom: 1px solid #343842;
+  user-select: none;
 }
 
 .top-toolbar .primary-action {

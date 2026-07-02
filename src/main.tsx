@@ -982,14 +982,23 @@ function App() {
     }
   }
 
+  function startWindowDrag(event: React.PointerEvent<HTMLElement>) {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, select, textarea, label, .file-tab')) return;
+    void sealio.startWindowDrag().catch(() => undefined);
+  }
+
   return (
     <div className="app-shell">
-      <header className="titlebar">
-        <div className="window-spacer" />
-        <div className="app-title">Sealio 图章工具</div>
+      <header className="titlebar" data-tauri-drag-region onPointerDown={startWindowDrag}>
+        <div className="window-spacer" data-tauri-drag-region />
+        <div className="app-title" data-tauri-drag-region>
+          Sealio 图章工具
+        </div>
       </header>
 
-      <section className="top-toolbar">
+      <section className="top-toolbar" onPointerDown={startWindowDrag}>
         <button className="icon-button" onClick={openDocument} title="打开本地 PDF 或图片文件" aria-label="打开文件">
           <IconOpenFile />
         </button>

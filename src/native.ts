@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export type NativeFilePayload = {
   path: string;
@@ -31,4 +32,5 @@ export const sealio = {
   listStamps: () => invoke<NativeStampPayload[]>('list_stamps'),
   pickExportPath: (payload: SaveExportPayload) => invoke<string | null>('pick_export_path', { payload }),
   writeExport: (payload: WriteExportPayload) => invoke<string>('write_export', { payload }),
+  startWindowDrag: () => getCurrentWindow().startDragging(),
 };
