@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "release/**"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -39,3 +44,25 @@ jobs:
           name: sealio-windows-installer
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+      - name: Copy installer into release directory
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "Windows installer was not found."
+          }
+          New-Item -ItemType Directory -Force -Path "release" | Out-Null
+          Copy-Item $installer.FullName "release/Sealio-Tauri-0.1.0-x64-setup.exe" -Force
+
+      - name: Commit Windows installer
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release/Sealio-Tauri-0.1.0-x64-setup.exe
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Add Windows installer package"
+            git push
+          }
