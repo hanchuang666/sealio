@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument, BlendMode, degrees } from 'pdf-lib';
+import type { NativeFilePayload } from './native';
 import { sealio } from './native';
 import './styles.css';
 
@@ -109,6 +110,10 @@ const SEAM_STAMP_DEFAULT_ROTATION = 0;
 const ZOOM_MIN_PERCENT = 20;
 const ZOOM_MAX_PERCENT = 200;
 const exportFileTypes: ExportFileType[] = ['pdf', 'png', 'jpg', 'jpeg'];
+const supportedDocumentExtensions = new Set(['pdf', 'png', 'jpg', 'jpeg']);
+const unsupportedDocumentFormatMessage = '仅支持PDF、PNG、JPG、JPEG格式的文件';
+const isMacPlatform =
+  navigator.platform.toLowerCase().includes('mac') || navigator.userAgent.toLowerCase().includes('mac os');
 
 function IconOpenFile() {
   return (
@@ -167,6 +172,11 @@ function exportFileTypeFromPath(path: string): ExportFileType | null {
   return exportFileTypes.includes(ext as ExportFileType) ? (ext as ExportFileType) : null;
 }
 
+function isSupportedDocumentPath(path: string) {
+  const match = path.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return Boolean(match && supportedDocumentExtensions.has(match[1]));
+}
+
 function ensureExportPathExtension(path: string, fileType: ExportFileType) {
   return exportFileTypeFromPath(path) ? path : `${path}.${fileType}`;
 }
@@ -189,6 +199,10 @@ function formatFileSize(bytes: number) {
     unitIndex += 1;
   }
   return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[unitIndex]}`;
+}
+
+function formatErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function renderPdfPages(bytes: Uint8Array): Promise<PageRender[]> {
@@ -264,14 +278,16 @@ function App() {
   const [selectedPlacementId, setSelectedPlacementId] = React.useState<string | null>(null);
   const [pageViewMode, setPageViewMode] = React.useState<PageViewMode>('multi');
   const [activePageNumber, setActivePageNumber] = React.useState(1);
-  const [stampHistoryView, setStampHistoryView] = React.useState<StampHistoryView>('list');
+  const [stampHistoryView, setStampHistoryView] = React.useState<StampHistoryView>('card');
   const [isStampManagerOpen, setIsStampManagerOpen] = React.useState(false);
   const [zoom, setZoom] = React.useState(0.92);
   const [zoomInputValue, setZoomInputValue] = React.useState('92');
   const [isExporting, setIsExporting] = React.useState(false);
   const [status, setStatus] = React.useState('准备就绪');
   const [pendingCloseDocumentId, setPendingCloseDocumentId] = React.useState<string | null>(null);
+  const [isExitConfirmOpen, setIsExitConfirmOpen] = React.useState(false);
   const [dragOverPage, setDragOverPage] = React.useState<number | null>(null);
+  const [isDocumentDropActive, setIsDocumentDropActive] = React.useState(false);
   const [stampDragPreview, setStampDragPreview] = React.useState<{ stampId: string; x: number; y: number } | null>(null);
   const [draggingDocumentId, setDraggingDocumentId] = React.useState<string | null>(null);
   const [placementContextMenu, setPlacementContextMenu] = React.useState<PlacementContextMenu | null>(null);
@@ -285,6 +301,7 @@ function App() {
   const stampPointerDrag = React.useRef<StampPointerDrag | null>(null);
   const documentTabDrag = React.useRef<DocumentTabDrag | null>(null);
   const suppressNextTabClick = React.useRef(false);
+  const shouldCloseAppRef = React.useRef(false);
   const pointerAction = React.useRef<
     | { kind: 'move'; id: string; startX: number; startY: number; originX: number; originY: number }
     | {
@@ -313,6 +330,42 @@ function App() {
     });
   }, []);
 
+  React.useEffect(() => {
+    let mounted = true;
+    let unlisten: (() => void) | null = null;
+
+    sealio
+      .onDocumentDrop(async (event) => {
+        if (!mounted) return;
+
+        if (event.type === 'enter' || event.type === 'over') {
+          setIsDocumentDropActive(true);
+          return;
+        }
+
+        setIsDocumentDropActive(false);
+
+        if (event.type === 'drop') {
+          await openDocumentPaths(event.paths);
+        }
+      })
+      .then((dispose) => {
+        if (!mounted) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch((error) => {
+        if (mounted) setStatus(`拖拽监听启动失败：${formatErrorMessage(error)}`);
+      });
+
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, []);
+
   const documentFile = documents.find((item) => item.id === activeDocumentId) ?? null;
   const selectedPlacement =
     placements.find((item) => item.id === selectedPlacementId && item.documentId === activeDocumentId) ?? null;
@@ -332,6 +385,7 @@ function App() {
   const pendingCloseDocument = pendingCloseDocumentId
     ? documents.find((item) => item.id === pendingCloseDocumentId) ?? null
     : null;
+  const dirtyDocuments = documents.filter((item) => dirtyDocumentIds.has(item.id));
   const canCreateSeamStamp = Boolean(documentFile?.kind === 'pdf' && documentFile.pages.length > 1 && contextPlacement);
 
   React.useEffect(() => {
@@ -354,6 +408,36 @@ function App() {
       if (editorScrollFrame.current !== null) window.cancelAnimationFrame(editorScrollFrame.current);
     };
   }, []);
+
+  React.useEffect(() => {
+    let mounted = true;
+    let unlisten: (() => void) | null = null;
+
+    sealio
+      .onWindowCloseRequested((event) => {
+        if (shouldCloseAppRef.current) return;
+        if (dirtyDocuments.length === 0) return;
+
+        event.preventDefault();
+        setPendingCloseDocumentId(null);
+        setIsExitConfirmOpen(true);
+      })
+      .then((dispose) => {
+        if (!mounted) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      })
+      .catch((error) => {
+        if (mounted) setStatus(`关闭监听启动失败：${formatErrorMessage(error)}`);
+      });
+
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [dirtyDocuments.length]);
 
   function scrollEditorToPage(pageNumber: number) {
     window.requestAnimationFrame(() => {
@@ -464,10 +548,7 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectedPlacementId, placements]);
 
-  async function openDocument() {
-    const payloads = await sealio.openDocument();
-    if (!payloads || payloads.length === 0) return;
-
+  async function importDocumentPayloads(payloads: NativeFilePayload[]) {
     setStatus(`正在渲染 ${payloads.length} 个文件...`);
     const loadedDocuments: LoadedDocument[] = [];
 
@@ -492,6 +573,42 @@ function App() {
     setSelectedPlacementId(null);
     setActivePageNumber(1);
     setStatus(`已打开 ${loadedDocuments.map((item) => item.name).join('、')}`);
+  }
+
+  async function openDocument() {
+    try {
+      const payloads = await sealio.openDocument();
+      if (!payloads || payloads.length === 0) return;
+      await importDocumentPayloads(payloads);
+    } catch (error) {
+      setStatus(`打开失败：${formatErrorMessage(error)}`);
+    }
+  }
+
+  async function openDocumentPaths(paths: string[]) {
+    if (paths.length === 0) return;
+
+    const supportedPaths = paths.filter(isSupportedDocumentPath);
+    if (supportedPaths.length !== paths.length) {
+      window.alert(unsupportedDocumentFormatMessage);
+    }
+
+    if (supportedPaths.length === 0) {
+      setStatus(unsupportedDocumentFormatMessage);
+      return;
+    }
+
+    try {
+      setStatus(`正在读取 ${supportedPaths.length} 个文件...`);
+      const payloads = await sealio.openDocumentPaths(supportedPaths);
+      if (payloads.length === 0) {
+        setStatus('拖入的文件无法打开');
+        return;
+      }
+      await importDocumentPayloads(payloads);
+    } catch (error) {
+      setStatus(`打开失败：${formatErrorMessage(error)}`);
+    }
   }
 
   async function uploadStamp() {
@@ -525,7 +642,7 @@ function App() {
       width: size,
       height: size,
       rotation: 0,
-      opacity: 0.78,
+      opacity: 1,
       blendMode: 'multiply',
     };
     setPlacements((current) => [...current, placement]);
@@ -748,9 +865,6 @@ function App() {
       1,
       Math.max(0, (sourcePlacement.y + sourcePlacement.height / 2) / sourcePage.height),
     );
-    const sourceRightGap = Math.max(0, sourcePage.width - (sourcePlacement.x + sourcePlacement.width));
-    const seamRightGap = 8;
-
     for (let index = 0; index < pageCount; index += 1) {
       const startX = Math.floor((sourceImage.naturalWidth * index) / pageCount);
       const endX = Math.floor((sourceImage.naturalWidth * (index + 1)) / pageCount);
@@ -764,8 +878,7 @@ function App() {
       const bytes = await canvasToPngBytes(canvas);
       const stampId = crypto.randomUUID();
       const page = documentFile.pages[index];
-      const rightGap = index === pageCount - 1 ? sourceRightGap : seamRightGap;
-      const x = Math.min(Math.max(0, page.width - sliceWidth - rightGap), Math.max(0, page.width - sliceWidth));
+      const x = Math.max(0, page.width - sliceWidth);
       const y = Math.min(
         Math.max(0, page.height * sourceCenterYRatio - sliceHeight / 2),
         Math.max(0, page.height - sliceHeight),
@@ -950,6 +1063,17 @@ function App() {
     setStatus(targetDocument ? `已关闭 ${targetDocument.name}` : '已关闭文件');
   }
 
+  async function confirmCloseApp() {
+    shouldCloseAppRef.current = true;
+    try {
+      await sealio.closeWindow();
+    } catch (error) {
+      shouldCloseAppRef.current = false;
+      setIsExitConfirmOpen(false);
+      setStatus(`关闭软件失败：${formatErrorMessage(error)}`);
+    }
+  }
+
   async function exportDocument() {
     if (!documentFile) {
       setStatus('请先打开文件');
@@ -991,8 +1115,12 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="titlebar" data-tauri-drag-region onPointerDown={startWindowDrag}>
-        <div className="window-spacer" data-tauri-drag-region />
+      <header
+        className={`titlebar${isMacPlatform ? ' titlebar--mac' : ''}`}
+        data-tauri-drag-region
+        onPointerDown={startWindowDrag}
+      >
+        {isMacPlatform ? <div className="window-spacer" data-tauri-drag-region /> : null}
         <div className="app-title" data-tauri-drag-region>
           Sealio 图章工具
         </div>
@@ -1222,9 +1350,9 @@ function App() {
               ))}
             </div>
           ) : (
-            <div className="empty-state">
+            <div className={`empty-state ${isDocumentDropActive ? 'drop-active' : ''}`}>
               <strong>打开本地文件开始</strong>
-              <span>支持 PDF、PNG、JPG、JPEG。上传图章后，双击页面即可放置。</span>
+              <span>支持拖入 PDF、PNG、JPG、JPEG。上传图章后，双击页面即可放置。</span>
             </div>
           )}
         </section>
@@ -1404,6 +1532,27 @@ function App() {
                 title="确认关闭当前文件"
               >
                 确认关闭
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isExitConfirmOpen && (
+        <div className="modal-backdrop" onClick={() => setIsExitConfirmOpen(false)}>
+          <section className="confirm-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <header className="confirm-modal-header">
+              <h2>退出软件？</h2>
+              <p>
+                当前有 {dirtyDocuments.length} 个文件存在未导出的改动，退出后这些改动不会保留。
+              </p>
+            </header>
+            <div className="confirm-modal-actions">
+              <button type="button" onClick={() => setIsExitConfirmOpen(false)} title="取消退出软件">
+                取消
+              </button>
+              <button type="button" className="danger-action" onClick={confirmCloseApp} title="确认退出软件">
+                确认退出
               </button>
             </div>
           </section>

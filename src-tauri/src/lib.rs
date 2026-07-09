@@ -51,6 +51,8 @@ struct WriteExportPayload {
     bytes: Vec<u8>,
 }
 
+const SUPPORTED_DOCUMENT_EXTENSIONS: &[&str] = &["pdf", "png", "jpg", "jpeg"];
+
 fn app_storage_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|error| error.to_string())
 }
@@ -120,6 +122,11 @@ fn path_extension(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn is_supported_document_path(path: &Path) -> bool {
+    let ext = path_extension(path);
+    path.is_file() && SUPPORTED_DOCUMENT_EXTENSIONS.contains(&ext.as_str())
+}
+
 fn read_file_payload(path: &Path) -> Result<NativeFilePayload, String> {
     Ok(NativeFilePayload {
         path: path.to_string_lossy().into_owned(),
@@ -183,6 +190,16 @@ fn open_document() -> Result<Option<Vec<NativeFilePayload>>, String> {
         .map(|path| read_file_payload(path))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(files))
+}
+
+#[tauri::command]
+fn open_document_paths(paths: Vec<String>) -> Result<Vec<NativeFilePayload>, String> {
+    paths
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| is_supported_document_path(path))
+        .map(|path| read_file_payload(&path))
+        .collect::<Result<Vec<_>, _>>()
 }
 
 #[tauri::command]
@@ -260,6 +277,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             open_document,
+            open_document_paths,
             upload_stamp,
             list_stamps,
             pick_export_path,
