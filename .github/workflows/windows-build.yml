@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths-ignore:
-      - "release/**"
+      - "release/Sealio-Tauri-0.1.0-x64-setup.exe"
   workflow_dispatch:
 
 permissions:
