@@ -50,6 +50,7 @@ button {
 .window-spacer {
   width: 70px;
   flex: 0 0 70px;
+  -webkit-app-region: no-drag;
 }
 
 .app-title {

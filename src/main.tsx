@@ -1109,7 +1109,7 @@ function App() {
   function startWindowDrag(event: React.PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest('button, input, select, textarea, label, .file-tab')) return;
+    if (target?.closest('button, input, select, textarea, label, .file-tab, .window-spacer')) return;
     void sealio.startWindowDrag().catch(() => undefined);
   }
 
@@ -1120,7 +1120,7 @@ function App() {
         data-tauri-drag-region
         onPointerDown={startWindowDrag}
       >
-        {isMacPlatform ? <div className="window-spacer" data-tauri-drag-region /> : null}
+        {isMacPlatform ? <div className="window-spacer" /> : null}
         <div className="app-title" data-tauri-drag-region>
           Sealio 图章工具
         </div>
@@ -1226,6 +1226,7 @@ function App() {
               <button
                 type="button"
                 className="file-tab-close"
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => requestCloseDocument(item.id, event)}
                 aria-label={`关闭 ${item.name}`}
                 title={`关闭 ${item.name}`}
