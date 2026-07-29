@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument, BlendMode, degrees } from 'pdf-lib';
 import type { NativeFilePayload } from './native';
-import { sealio } from './native';
+import { isTauriRuntime, sealio } from './native';
 import './styles.css';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -114,6 +114,7 @@ const supportedDocumentExtensions = new Set(['pdf', 'png', 'jpg', 'jpeg']);
 const unsupportedDocumentFormatMessage = '仅支持PDF、PNG、JPG、JPEG格式的文件';
 const isMacPlatform =
   navigator.platform.toLowerCase().includes('mac') || navigator.userAgent.toLowerCase().includes('mac os');
+const shouldShowWindowSpacer = isTauriRuntime() && isMacPlatform;
 
 function IconOpenFile() {
   return (
@@ -203,6 +204,18 @@ function formatFileSize(bytes: number) {
 
 function formatErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  const randomValues =
+    typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function'
+      ? Array.from(crypto.getRandomValues(new Uint32Array(2)))
+      : [Math.floor(Math.random() * 0xffffffff), Math.floor(Math.random() * 0xffffffff)];
+  return `${Date.now().toString(36)}-${randomValues.map((value) => value.toString(36)).join('-')}`;
 }
 
 async function renderPdfPages(bytes: Uint8Array): Promise<PageRender[]> {
@@ -346,6 +359,10 @@ function App() {
         setIsDocumentDropActive(false);
 
         if (event.type === 'drop') {
+          if (event.files?.length) {
+            await openDocumentFiles(event.files);
+            return;
+          }
           await openDocumentPaths(event.paths);
         }
       })
@@ -558,7 +575,7 @@ function App() {
       const kind: DocumentKind = ext === 'pdf' ? 'pdf' : 'image';
       const pages = kind === 'pdf' ? await renderPdfPages(bytes) : await renderImagePage(bytes, extensionToMime(ext));
       loadedDocuments.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         name: payload.name,
         path: payload.path,
         ext,
@@ -611,29 +628,63 @@ function App() {
     }
   }
 
+  async function openDocumentFiles(files: File[]) {
+    if (files.length === 0) return;
+
+    const supportedFiles = files.filter((file) => isSupportedDocumentPath(file.name));
+    if (supportedFiles.length !== files.length) {
+      window.alert(unsupportedDocumentFormatMessage);
+    }
+
+    if (supportedFiles.length === 0) {
+      setStatus(unsupportedDocumentFormatMessage);
+      return;
+    }
+
+    try {
+      setStatus(`正在读取 ${supportedFiles.length} 个文件...`);
+      const payloads = await sealio.openDocumentFiles(supportedFiles);
+      if (payloads.length === 0) {
+        setStatus('拖入的文件无法打开');
+        return;
+      }
+      await importDocumentPayloads(payloads);
+    } catch (error) {
+      setStatus(`打开失败：${formatErrorMessage(error)}`);
+    }
+  }
+
   async function uploadStamp() {
-    const uploaded = await sealio.uploadStamp();
-    if (uploaded.length === 0) return;
-    const next = uploaded.map((item) => {
-      const bytes = toUint8Array(item.bytes);
-      return {
-        id: item.id,
-        originalName: item.originalName,
-        mimeType: item.mimeType,
-        bytes,
-        objectUrl: bytesToObjectUrl(bytes, item.mimeType),
-      };
-    });
-    setStamps((current) => [...next, ...current]);
-    setSelectedStampId(next[0].id);
-    setStatus(`已上传 ${next.length} 个图章`);
+    try {
+      setStatus('正在上传图章...');
+      const uploaded = await sealio.uploadStamp();
+      if (uploaded.length === 0) {
+        setStatus('已取消上传图章');
+        return;
+      }
+      const next = uploaded.map((item) => {
+        const bytes = toUint8Array(item.bytes);
+        return {
+          id: item.id,
+          originalName: item.originalName,
+          mimeType: item.mimeType,
+          bytes,
+          objectUrl: bytesToObjectUrl(bytes, item.mimeType),
+        };
+      });
+      setStamps((current) => [...next, ...current]);
+      setSelectedStampId(next[0].id);
+      setStatus(`已上传 ${next.length} 个图章`);
+    } catch (error) {
+      setStatus(`图章上传失败：${formatErrorMessage(error)}`);
+    }
   }
 
   function createStampPlacement(page: PageRender, stampId: string, x?: number, y?: number) {
     if (!documentFile) return;
     const size = DEFAULT_STAMP_SIZE;
     const placement: StampPlacement = {
-      id: crypto.randomUUID(),
+      id: createId(),
       documentId: documentFile.id,
       stampId,
       pageNumber: page.pageNumber,
@@ -653,6 +704,7 @@ function App() {
   }
 
   function addStampAtPointer(page: PageRender, event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
     if (!selectedStampId) {
       setStatus('请先上传或选择图章');
       return;
@@ -876,7 +928,7 @@ function App() {
       if (!context) throw new Error('无法切割骑缝章');
       context.drawImage(sourceImage, startX, 0, sourceWidth, sourceImage.naturalHeight, 0, 0, sourceWidth, sourceImage.naturalHeight);
       const bytes = await canvasToPngBytes(canvas);
-      const stampId = crypto.randomUUID();
+      const stampId = createId();
       const page = documentFile.pages[index];
       const x = Math.max(0, page.width - sliceWidth);
       const y = Math.min(
@@ -894,7 +946,7 @@ function App() {
       });
 
       slicePlacements.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         documentId: documentFile.id,
         stampId,
         pageNumber: page.pageNumber,
@@ -1116,11 +1168,11 @@ function App() {
   return (
     <div className="app-shell">
       <header
-        className={`titlebar${isMacPlatform ? ' titlebar--mac' : ''}`}
+        className={`titlebar${shouldShowWindowSpacer ? ' titlebar--mac' : ''}`}
         data-tauri-drag-region
         onPointerDown={startWindowDrag}
       >
-        {isMacPlatform ? <div className="window-spacer" /> : null}
+        {shouldShowWindowSpacer ? <div className="window-spacer" /> : null}
         <div className="app-title" data-tauri-drag-region>
           Sealio 图章工具
         </div>
@@ -1321,7 +1373,10 @@ function App() {
                                 placementId: placement.id,
                               });
                             }}
-                            onDoubleClick={(event) => event.stopPropagation()}
+                            onDoubleClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
                           >
                             <img src={stamp.objectUrl} alt={stamp.originalName} draggable={false} />
                             {selected && (

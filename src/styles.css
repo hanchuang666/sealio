@@ -13,12 +13,20 @@
 body {
   margin: 0;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 button,
 select,
 input {
   font: inherit;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 button {
@@ -402,6 +410,8 @@ input[type="number"] {
     #111318;
   background-size: 24px 24px;
   padding: 36px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .document-stack {
@@ -434,6 +444,8 @@ input[type="number"] {
   background: white;
   box-shadow: 0 16px 45px rgba(0, 0, 0, 0.42);
   cursor: copy;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .page-canvas.drag-over {
@@ -473,6 +485,9 @@ input[type="number"] {
   border: 1px solid transparent;
   transform-origin: center;
   cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .stamp-placement img {
