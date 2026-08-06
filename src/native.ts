@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export type NativeFilePayload = {
@@ -12,6 +12,7 @@ export type NativeStampPayload = {
   id: string;
   originalName: string;
   storedPath: string;
+  previewUrl?: string;
   mimeType: string;
   createdAt: number;
   bytes: number[];
@@ -42,6 +43,12 @@ type BackendStampPayload = {
   url: string;
   mimeType: string;
   createdAt: number;
+  bytes?: number;
+};
+
+type ReadStampPayload = {
+  id: string;
+  storedPath: string;
 };
 
 const documentAccept = '.pdf,.png,.jpg,.jpeg';
@@ -114,15 +121,14 @@ async function uploadFiles(endpoint: string, files: File[]) {
 }
 
 async function stampPayloadFromBackend(item: BackendStampPayload): Promise<NativeStampPayload> {
-  const response = await fetch(item.url);
-  if (!response.ok) throw new Error(`图章读取失败：${item.originalName}`);
   return {
     id: item.id,
     originalName: item.originalName,
     storedPath: item.url,
+    previewUrl: item.url,
     mimeType: item.mimeType,
     createdAt: item.createdAt,
-    bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+    bytes: [],
   };
 }
 
@@ -131,9 +137,18 @@ async function stampPayloadFromFile(file: File, item: BackendStampPayload): Prom
     id: item.id,
     originalName: item.originalName,
     storedPath: item.url,
+    previewUrl: item.url,
     mimeType: item.mimeType,
     createdAt: item.createdAt,
     bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+  };
+}
+
+function stampPayloadFromTauri(item: NativeStampPayload): NativeStampPayload {
+  return {
+    ...item,
+    previewUrl: item.previewUrl || convertFileSrc(item.storedPath),
+    bytes: item.bytes || [],
   };
 }
 
@@ -168,7 +183,10 @@ export const sealio = {
     return Promise.all(supported.map(fileToPayload));
   },
   uploadStamp: async () => {
-    if (isTauriRuntime()) return invoke<NativeStampPayload[]>('upload_stamp');
+    if (isTauriRuntime()) {
+      const stamps = await invoke<NativeStampPayload[]>('upload_stamp');
+      return stamps.map(stampPayloadFromTauri);
+    }
 
     const files = await pickFiles(stampAccept);
     if (!files || files.length === 0) return [];
@@ -178,12 +196,22 @@ export const sealio = {
     return Promise.all(uploaded.map((item, index) => stampPayloadFromFile(supported[index], item)));
   },
   listStamps: async () => {
-    if (isTauriRuntime()) return invoke<NativeStampPayload[]>('list_stamps');
+    if (isTauriRuntime()) {
+      const stamps = await invoke<NativeStampPayload[]>('list_stamps');
+      return stamps.map(stampPayloadFromTauri);
+    }
 
     const response = await fetch('/api/stamps');
     if (!response.ok) return [];
     const stamps = (await response.json()) as BackendStampPayload[];
     return Promise.all(stamps.map(stampPayloadFromBackend));
+  },
+  readStamp: async (payload: ReadStampPayload) => {
+    if (isTauriRuntime()) return invoke<number[]>('read_stamp', { id: payload.id });
+
+    const response = await fetch(payload.storedPath);
+    if (!response.ok) throw new Error('图章读取失败');
+    return Array.from(new Uint8Array(await response.arrayBuffer()));
   },
   pickExportPath: (payload: SaveExportPayload) => {
     if (isTauriRuntime()) return invoke<string | null>('pick_export_path', { payload });

@@ -1,0 +1,117 @@
+name: Deploy Sealio Web Server
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "release/**"
+      - "TECH_STACK.md"
+  workflow_dispatch:
+
+concurrency:
+  group: sealio-server-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy to server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER_HOST: ${{ secrets.SEALIO_SERVER_HOST }}
+      SERVER_PORT: ${{ secrets.SEALIO_SERVER_PORT }}
+      SERVER_USER: ${{ secrets.SEALIO_SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SEALIO_SERVER_SSH_KEY }}
+      DEPLOY_ARCHIVE: sealio-deploy-${{ github.sha }}.tgz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Create deploy archive
+        run: |
+          set -euo pipefail
+          rm -rf .deploy-bundle "$DEPLOY_ARCHIVE"
+          mkdir -p .deploy-bundle/web .deploy-bundle/backend .deploy-bundle/deploy
+          cp -a dist/. .deploy-bundle/web/
+          cp server/sealio_backend.py .deploy-bundle/backend/sealio_backend.py
+          cp deploy/sealio-backend.service .deploy-bundle/deploy/sealio-backend.service
+          cp deploy/nginx-sealio.conf .deploy-bundle/deploy/nginx-sealio.conf
+          tar -czf "$DEPLOY_ARCHIVE" -C .deploy-bundle .
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          : "${SERVER_HOST:?Missing GitHub secret SEALIO_SERVER_HOST}"
+          : "${SERVER_SSH_KEY:?Missing GitHub secret SEALIO_SERVER_SSH_KEY}"
+          echo "SERVER_PORT=${SERVER_PORT:-22}" >> "$GITHUB_ENV"
+          echo "SERVER_USER=${SERVER_USER:-root}" >> "$GITHUB_ENV"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/sealio_deploy_key
+          chmod 600 ~/.ssh/sealio_deploy_key
+          ssh-keyscan -p "${SERVER_PORT:-22}" -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload archive
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/sealio_deploy_key \
+            -P "$SERVER_PORT" \
+            "$DEPLOY_ARCHIVE" \
+            "$SERVER_USER@$SERVER_HOST:/tmp/$DEPLOY_ARCHIVE"
+
+      - name: Deploy and restart services
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/sealio_deploy_key -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
+            "DEPLOY_ARCHIVE=/tmp/$DEPLOY_ARCHIVE bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          release_id="$(date +%Y%m%d%H%M%S)"
+          work_dir="/tmp/sealio-deploy-$release_id"
+          web_dir="/var/www/sealio"
+          backend_dir="/opt/sealio/backend"
+          data_dir="/var/lib/sealio"
+
+          mkdir -p "$work_dir" "$web_dir" "$backend_dir" "$data_dir/stamps" "$data_dir/uploads"
+          tar -xzf "$DEPLOY_ARCHIVE" -C "$work_dir"
+
+          if [ -d "$web_dir" ]; then
+            cp -a "$web_dir" "$web_dir.backup.$release_id"
+          fi
+
+          rm -rf "$web_dir"/*
+          cp -a "$work_dir/web/." "$web_dir/"
+          cp "$work_dir/backend/sealio_backend.py" "$backend_dir/sealio_backend.py"
+          cp "$work_dir/deploy/sealio-backend.service" /etc/systemd/system/sealio-backend.service
+          cp "$work_dir/deploy/nginx-sealio.conf" /etc/nginx/conf.d/sealio.conf
+
+          chown -R nginx:nginx "$web_dir" 2>/dev/null || true
+          chmod 755 "$backend_dir/sealio_backend.py"
+
+          systemctl daemon-reload
+          systemctl restart sealio-backend
+          nginx -t
+          systemctl reload nginx
+
+          curl -fsS http://127.0.0.1/api/health
+          systemctl is-active --quiet sealio-backend
+          systemctl is-active --quiet nginx
+
+          rm -rf "$work_dir" "$DEPLOY_ARCHIVE"
+          REMOTE

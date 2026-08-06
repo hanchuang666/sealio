@@ -1,15 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument, BlendMode, degrees } from 'pdf-lib';
-import type { NativeFilePayload } from './native';
+import type { NativeFilePayload, NativeStampPayload } from './native';
 import { isTauriRuntime, sealio } from './native';
 import './styles.css';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.js',
-  import.meta.url,
-).toString();
 
 type DocumentKind = 'pdf' | 'image';
 type BlendModeKey = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
@@ -40,6 +33,7 @@ type StampAsset = {
   mimeType: string;
   bytes: Uint8Array;
   objectUrl: string;
+  sourceUrl?: string;
   isDerived?: boolean;
 };
 
@@ -97,12 +91,12 @@ const canvasBlendMap: Record<BlendModeKey, GlobalCompositeOperation> = {
   lighten: 'lighten',
 };
 
-const pdfBlendMap: Partial<Record<BlendModeKey, BlendMode>> = {
-  multiply: BlendMode.Multiply,
-  screen: BlendMode.Screen,
-  overlay: BlendMode.Overlay,
-  darken: BlendMode.Darken,
-  lighten: BlendMode.Lighten,
+const pdfBlendModeKeys: Partial<Record<BlendModeKey, 'Multiply' | 'Screen' | 'Overlay' | 'Darken' | 'Lighten'>> = {
+  multiply: 'Multiply',
+  screen: 'Screen',
+  overlay: 'Overlay',
+  darken: 'Darken',
+  lighten: 'Lighten',
 };
 
 const DEFAULT_STAMP_SIZE = 150;
@@ -115,6 +109,29 @@ const unsupportedDocumentFormatMessage = '仅支持PDF、PNG、JPG、JPEG格式�
 const isMacPlatform =
   navigator.platform.toLowerCase().includes('mac') || navigator.userAgent.toLowerCase().includes('mac os');
 const shouldShowWindowSpacer = isTauriRuntime() && isMacPlatform;
+
+type PdfJsModule = typeof import('pdfjs-dist');
+type PdfLibModule = typeof import('pdf-lib');
+
+let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
+let pdfLibModulePromise: Promise<PdfLibModule> | null = null;
+
+async function getPdfJsModule() {
+  if (!pdfJsModulePromise) {
+    pdfJsModulePromise = import('pdfjs-dist').then((module) => {
+      module.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.js', import.meta.url).toString();
+      return module;
+    });
+  }
+  return pdfJsModulePromise;
+}
+
+async function getPdfLibModule() {
+  if (!pdfLibModulePromise) {
+    pdfLibModulePromise = import('pdf-lib');
+  }
+  return pdfLibModulePromise;
+}
 
 function IconOpenFile() {
   return (
@@ -190,6 +207,52 @@ function displayNameWithoutExtension(name: string) {
   return name.replace(/\.[^/.]+$/, '');
 }
 
+function fuzzyMatchStampName(name: string, keyword: string) {
+  const normalizedName = displayNameWithoutExtension(name).normalize('NFKC').toLocaleLowerCase();
+  const searchTerms = keyword
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return searchTerms.every((term) => {
+    if (normalizedName.includes(term)) return true;
+
+    let termIndex = 0;
+    for (const character of normalizedName) {
+      if (character === term[termIndex]) termIndex += 1;
+      if (termIndex === term.length) return true;
+    }
+    return false;
+  });
+}
+
+function StampImage({ stamp }: { stamp: StampAsset }) {
+  const [isLoaded, setIsLoaded] = React.useState(false);
+  const [hasError, setHasError] = React.useState(false);
+
+  React.useEffect(() => {
+    setIsLoaded(false);
+    setHasError(false);
+  }, [stamp.objectUrl]);
+
+  return (
+    <span className={`stamp-image-wrap ${isLoaded ? 'loaded' : ''} ${hasError ? 'error' : ''}`}>
+      {!isLoaded && !hasError && <span className="stamp-image-placeholder" aria-hidden="true" />}
+      {hasError && <span className="stamp-image-error">加载失败</span>}
+      <img
+        src={stamp.objectUrl}
+        alt={stamp.originalName}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setIsLoaded(true)}
+        onError={() => setHasError(true)}
+      />
+    </span>
+  );
+}
+
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB'];
@@ -206,6 +269,25 @@ function formatErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function stampAssetFromPayload(item: NativeStampPayload): StampAsset {
+  const bytes = toUint8Array(item.bytes);
+  const sourceUrl = item.storedPath || undefined;
+  return {
+    id: item.id,
+    originalName: item.originalName,
+    mimeType: item.mimeType,
+    bytes,
+    objectUrl: bytes.byteLength > 0 ? bytesToObjectUrl(bytes, item.mimeType) : item.previewUrl || sourceUrl || '',
+    sourceUrl,
+  };
+}
+
+async function ensureStampBytes(stamp: StampAsset) {
+  if (stamp.bytes.byteLength > 0) return stamp.bytes;
+  if (!stamp.sourceUrl) throw new Error(`图章未加载：${stamp.originalName}`);
+  return toUint8Array(await sealio.readStamp({ id: stamp.id, storedPath: stamp.sourceUrl }));
+}
+
 function createId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -219,7 +301,8 @@ function createId() {
 }
 
 async function renderPdfPages(bytes: Uint8Array): Promise<PageRender[]> {
-  const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() });
+  const pdfJsModule = await getPdfJsModule();
+  const loadingTask = pdfJsModule.getDocument({ data: bytes.slice() });
   const pdf = await loadingTask.promise;
   const pages: PageRender[] = [];
 
@@ -292,10 +375,14 @@ function App() {
   const [pageViewMode, setPageViewMode] = React.useState<PageViewMode>('multi');
   const [activePageNumber, setActivePageNumber] = React.useState(1);
   const [stampHistoryView, setStampHistoryView] = React.useState<StampHistoryView>('card');
+  const [stampSearchKeyword, setStampSearchKeyword] = React.useState('');
   const [isStampManagerOpen, setIsStampManagerOpen] = React.useState(false);
   const [zoom, setZoom] = React.useState(0.92);
   const [zoomInputValue, setZoomInputValue] = React.useState('92');
+  const [isDocumentLoading, setIsDocumentLoading] = React.useState(false);
   const [isExporting, setIsExporting] = React.useState(false);
+  const [isStampHistoryLoading, setIsStampHistoryLoading] = React.useState(true);
+  const [stampHistoryError, setStampHistoryError] = React.useState<string | null>(null);
   const [status, setStatus] = React.useState('准备就绪');
   const [pendingCloseDocumentId, setPendingCloseDocumentId] = React.useState<string | null>(null);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = React.useState(false);
@@ -313,6 +400,7 @@ function App() {
   const editorScrollFrame = React.useRef<number | null>(null);
   const stampPointerDrag = React.useRef<StampPointerDrag | null>(null);
   const documentTabDrag = React.useRef<DocumentTabDrag | null>(null);
+  const isDocumentLoadingRef = React.useRef(false);
   const suppressNextTabClick = React.useRef(false);
   const shouldCloseAppRef = React.useRef(false);
   const pointerAction = React.useRef<
@@ -330,17 +418,29 @@ function App() {
   >(null);
 
   React.useEffect(() => {
-    sealio.listStamps().then((items) => {
-      const loaded = items.map((item) => ({
-        id: item.id,
-        originalName: item.originalName,
-        mimeType: item.mimeType,
-        bytes: toUint8Array(item.bytes),
-        objectUrl: bytesToObjectUrl(toUint8Array(item.bytes), item.mimeType),
-      }));
-      setStamps(loaded);
-      if (loaded[0]) setSelectedStampId(loaded[0].id);
-    });
+    let mounted = true;
+    setIsStampHistoryLoading(true);
+    setStampHistoryError(null);
+    sealio
+      .listStamps()
+      .then((items) => {
+        if (!mounted) return;
+        const loaded = items.map(stampAssetFromPayload);
+        setStamps(loaded);
+        if (loaded[0]) setSelectedStampId(loaded[0].id);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = `图章加载失败：${formatErrorMessage(error)}`;
+        setStampHistoryError(message);
+        setStatus(message);
+      })
+      .finally(() => {
+        if (mounted) setIsStampHistoryLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   React.useEffect(() => {
@@ -388,6 +488,7 @@ function App() {
     placements.find((item) => item.id === selectedPlacementId && item.documentId === activeDocumentId) ?? null;
   const selectedStamp = stamps.find((stamp) => stamp.id === selectedStampId) ?? null;
   const visibleStamps = stamps.filter((stamp) => !stamp.isDerived);
+  const filteredStamps = visibleStamps.filter((stamp) => fuzzyMatchStampName(stamp.originalName, stampSearchKeyword));
   const activePlacements = documentFile
     ? placements.filter((placement) => placement.documentId === documentFile.id)
     : [];
@@ -593,12 +694,18 @@ function App() {
   }
 
   async function openDocument() {
+    if (isDocumentLoadingRef.current) return;
+    isDocumentLoadingRef.current = true;
+    setIsDocumentLoading(true);
     try {
       const payloads = await sealio.openDocument();
       if (!payloads || payloads.length === 0) return;
       await importDocumentPayloads(payloads);
     } catch (error) {
       setStatus(`打开失败：${formatErrorMessage(error)}`);
+    } finally {
+      isDocumentLoadingRef.current = false;
+      setIsDocumentLoading(false);
     }
   }
 
@@ -615,6 +722,10 @@ function App() {
       return;
     }
 
+    if (isDocumentLoadingRef.current) return;
+    isDocumentLoadingRef.current = true;
+    setIsDocumentLoading(true);
+
     try {
       setStatus(`正在读取 ${supportedPaths.length} 个文件...`);
       const payloads = await sealio.openDocumentPaths(supportedPaths);
@@ -625,6 +736,9 @@ function App() {
       await importDocumentPayloads(payloads);
     } catch (error) {
       setStatus(`打开失败：${formatErrorMessage(error)}`);
+    } finally {
+      isDocumentLoadingRef.current = false;
+      setIsDocumentLoading(false);
     }
   }
 
@@ -641,6 +755,10 @@ function App() {
       return;
     }
 
+    if (isDocumentLoadingRef.current) return;
+    isDocumentLoadingRef.current = true;
+    setIsDocumentLoading(true);
+
     try {
       setStatus(`正在读取 ${supportedFiles.length} 个文件...`);
       const payloads = await sealio.openDocumentFiles(supportedFiles);
@@ -651,6 +769,9 @@ function App() {
       await importDocumentPayloads(payloads);
     } catch (error) {
       setStatus(`打开失败：${formatErrorMessage(error)}`);
+    } finally {
+      isDocumentLoadingRef.current = false;
+      setIsDocumentLoading(false);
     }
   }
 
@@ -662,16 +783,7 @@ function App() {
         setStatus('已取消上传图章');
         return;
       }
-      const next = uploaded.map((item) => {
-        const bytes = toUint8Array(item.bytes);
-        return {
-          id: item.id,
-          originalName: item.originalName,
-          mimeType: item.mimeType,
-          bytes,
-          objectUrl: bytesToObjectUrl(bytes, item.mimeType),
-        };
-      });
+      const next = uploaded.map(stampAssetFromPayload);
       setStamps((current) => [...next, ...current]);
       setSelectedStampId(next[0].id);
       setStatus(`已上传 ${next.length} 个图章`);
@@ -1179,7 +1291,13 @@ function App() {
       </header>
 
       <section className="top-toolbar" onPointerDown={startWindowDrag}>
-        <button className="icon-button" onClick={openDocument} title="打开本地 PDF 或图片文件" aria-label="打开文件">
+        <button
+          className="icon-button"
+          onClick={openDocument}
+          disabled={isDocumentLoading}
+          title={isDocumentLoading ? '正在加载文件' : '打开本地 PDF 或图片文件'}
+          aria-label="打开文件"
+        >
           <IconOpenFile />
         </button>
         <button
@@ -1292,7 +1410,7 @@ function App() {
         )}
       </section>
 
-      <main className="workspace">
+      <main className="workspace" aria-busy={isDocumentLoading}>
         <aside className="page-panel">
           <div className="panel-title">页面</div>
           {documentFile ? (
@@ -1439,9 +1557,37 @@ function App() {
                 </div>
               </div>
             </div>
+            <label className="stamp-search">
+              <span className="stamp-search-icon" aria-hidden="true">⌕</span>
+              <input
+                type="search"
+                value={stampSearchKeyword}
+                placeholder="搜索图章名称"
+                aria-label="搜索图章"
+                onChange={(event) => setStampSearchKeyword(event.target.value)}
+              />
+              {stampSearchKeyword && (
+                <button
+                  type="button"
+                  className="stamp-search-clear"
+                  onClick={() => setStampSearchKeyword('')}
+                  title="清空搜索"
+                  aria-label="清空图章搜索"
+                >
+                  ×
+                </button>
+              )}
+            </label>
             <div className={`stamp-history ${stampHistoryView}`}>
-              {visibleStamps.length > 0 ? (
-                visibleStamps.map((stamp) => (
+              {isStampHistoryLoading ? (
+                <div className="stamp-loading-panel" role="status">
+                  <span className="simple-loading-bar" aria-hidden="true" />
+                  <span>正在加载图章...</span>
+                </div>
+              ) : stampHistoryError ? (
+                <div className="empty-panel">{stampHistoryError}</div>
+              ) : filteredStamps.length > 0 ? (
+                filteredStamps.map((stamp) => (
                   <button
                     className={`stamp-item ${stamp.id === selectedStampId ? 'selected' : ''}`}
                     key={stamp.id}
@@ -1449,10 +1595,12 @@ function App() {
                     onPointerDown={(event) => startStampPointerDrag(event, stamp.id)}
                     onClick={() => setSelectedStampId(stamp.id)}
                   >
-                    <img src={stamp.objectUrl} alt={stamp.originalName} />
+                    <StampImage stamp={stamp} />
                     <span>{displayNameWithoutExtension(stamp.originalName)}</span>
                   </button>
                 ))
+              ) : stampSearchKeyword.trim() ? (
+                <div className="empty-panel">没有匹配“{stampSearchKeyword.trim()}”的图章</div>
               ) : (
                 <div className="empty-panel">上传图章后自动保存到本地历史</div>
               )}
@@ -1532,6 +1680,16 @@ function App() {
             )}
           </section>
         </aside>
+
+        {isDocumentLoading && (
+          <div className="workspace-loading" role="status" aria-live="polite">
+            <div className="workspace-loading-content">
+              <span className="workspace-loading-spinner" aria-hidden="true" />
+              <strong>正在加载文件...</strong>
+              <span>请稍候，文件加载完成后即可继续编辑</span>
+            </div>
+          </div>
+        )}
       </main>
 
       {placementContextMenu && contextPlacement && (
@@ -1648,7 +1806,14 @@ function App() {
               </button>
             </div>
             <div className="managed-stamp-grid">
-              {visibleStamps.length > 0 ? (
+              {isStampHistoryLoading ? (
+                <div className="stamp-loading-panel" role="status">
+                  <span className="simple-loading-bar" aria-hidden="true" />
+                  <span>正在加载图章...</span>
+                </div>
+              ) : stampHistoryError ? (
+                <div className="empty-panel">{stampHistoryError}</div>
+              ) : visibleStamps.length > 0 ? (
                 visibleStamps.map((stamp) => (
                   <button
                     className={`managed-stamp-card ${stamp.id === selectedStampId ? 'selected' : ''}`}
@@ -1656,7 +1821,7 @@ function App() {
                     onClick={() => setSelectedStampId(stamp.id)}
                     title={`选择图章：${displayNameWithoutExtension(stamp.originalName)}`}
                   >
-                    <img src={stamp.objectUrl} alt={stamp.originalName} />
+                    <StampImage stamp={stamp} />
                     <span>{displayNameWithoutExtension(stamp.originalName)}</span>
                   </button>
                 ))
@@ -1672,8 +1837,10 @@ function App() {
 }
 
 async function exportPdf(documentFile: LoadedDocument, placements: StampPlacement[], stamps: StampAsset[]) {
+  const { PDFDocument, BlendMode, degrees } = await getPdfLibModule();
   const pdfDoc = await PDFDocument.load(documentFile.bytes);
   const pages = pdfDoc.getPages();
+  const stampBytesCache = new Map<string, Uint8Array>();
 
   for (const placement of placements) {
     const page = pages[placement.pageNumber - 1];
@@ -1681,12 +1848,20 @@ async function exportPdf(documentFile: LoadedDocument, placements: StampPlacemen
     const stamp = stamps.find((item) => item.id === placement.stampId);
     if (!page || !renderedPage || !stamp) continue;
 
-    const embedded = stamp.mimeType === 'image/png' ? await pdfDoc.embedPng(stamp.bytes) : await pdfDoc.embedJpg(stamp.bytes);
+    let stampBytes = stampBytesCache.get(stamp.id);
+    if (!stampBytes) {
+      stampBytes = await ensureStampBytes(stamp);
+      stampBytesCache.set(stamp.id, stampBytes);
+    }
+    const embedded = stamp.mimeType === 'image/png' ? await pdfDoc.embedPng(stampBytes) : await pdfDoc.embedJpg(stampBytes);
     const { width: pdfWidth, height: pdfHeight } = page.getSize();
     const x = (placement.x / renderedPage.width) * pdfWidth;
     const width = (placement.width / renderedPage.width) * pdfWidth;
     const height = (placement.height / renderedPage.height) * pdfHeight;
     const y = pdfHeight - ((placement.y / renderedPage.height) * pdfHeight + height);
+
+    const blendModeKey = pdfBlendModeKeys[placement.blendMode];
+    const blendMode = blendModeKey ? BlendMode[blendModeKey] : undefined;
 
     page.drawImage(embedded, {
       x,
@@ -1695,7 +1870,7 @@ async function exportPdf(documentFile: LoadedDocument, placements: StampPlacemen
       height,
       rotate: degrees(placement.rotation),
       opacity: placement.opacity,
-      blendMode: pdfBlendMap[placement.blendMode],
+      blendMode,
     });
   }
 
@@ -1705,6 +1880,7 @@ async function exportPdf(documentFile: LoadedDocument, placements: StampPlacemen
 async function exportDocumentAsPdf(documentFile: LoadedDocument, placements: StampPlacement[], stamps: StampAsset[]) {
   if (documentFile.kind === 'pdf') return exportPdf(documentFile, placements, stamps);
 
+  const { PDFDocument } = await getPdfLibModule();
   const page = documentFile.pages[0];
   const imageBytes = await exportPageAsImage(documentFile, placements, stamps, 1, 'image/png');
   const pdfDoc = await PDFDocument.create();

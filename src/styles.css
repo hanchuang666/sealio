@@ -291,10 +291,59 @@ input[type="number"] {
 }
 
 .workspace {
+  position: relative;
   min-height: 0;
   display: grid;
   grid-template-columns: 170px 1fr 300px;
   background: #111318;
+}
+
+.workspace-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 14, 18, 0.78);
+  backdrop-filter: blur(2px);
+}
+
+.workspace-loading-content {
+  min-width: 260px;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px 30px;
+  color: #eef3ff;
+  background: #20242d;
+  border: 1px solid #3b4350;
+  border-radius: 10px;
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42);
+}
+
+.workspace-loading-content strong {
+  font-size: 14px;
+}
+
+.workspace-loading-content > span:last-child {
+  color: #9fa8b7;
+  font-size: 12px;
+}
+
+.workspace-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #3b4350;
+  border-top-color: #6f9cff;
+  border-radius: 50%;
+  animation: workspace-loading-spin 0.8s linear infinite;
+}
+
+@keyframes workspace-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .page-panel,
@@ -593,6 +642,64 @@ input[type="number"] {
   flex: 1;
 }
 
+.stamp-search {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  padding: 8px 10px 0;
+}
+
+.stamp-search input {
+  width: 100%;
+  height: 30px;
+  padding: 5px 30px 5px 30px;
+  color: #e8ebf0;
+  background: #15181e;
+  border: 1px solid #343944;
+  border-radius: 6px;
+  outline: none;
+  font-size: 12px;
+}
+
+.stamp-search input:focus {
+  border-color: #4f82e9;
+  box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.16);
+}
+
+.stamp-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.stamp-search-icon,
+.stamp-search-clear {
+  position: absolute;
+  top: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: #8490a1;
+}
+
+.stamp-search-icon {
+  left: 10px;
+  pointer-events: none;
+  font-size: 18px;
+  transform: rotate(-18deg);
+}
+
+.stamp-search-clear {
+  right: 10px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.stamp-search-clear:hover {
+  color: #ffffff;
+}
+
 .stamp-history.card {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
@@ -602,6 +709,82 @@ input[type="number"] {
   grid-column: 1 / -1;
   width: 100%;
   white-space: normal;
+}
+
+.stamp-loading-panel {
+  grid-column: 1 / -1;
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  color: #8f98a8;
+  font-size: 12px;
+}
+
+.simple-loading-bar {
+  width: 72px;
+  height: 3px;
+  overflow: hidden;
+  background: #2a303a;
+  border-radius: 999px;
+}
+
+.simple-loading-bar::after {
+  content: "";
+  display: block;
+  width: 34%;
+  height: 100%;
+  background: #6f8fd8;
+  border-radius: inherit;
+  animation: simple-loading-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes simple-loading-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.stamp-image-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #f5f7fb linear-gradient(110deg, #eef2f8 8%, #ffffff 18%, #eef2f8 33%);
+  background-size: 200% 100%;
+  border-radius: 4px;
+}
+
+.stamp-image-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.stamp-image-wrap.loaded img {
+  opacity: 1;
+}
+
+.stamp-image-wrap.error img {
+  display: none;
+}
+
+.stamp-image-error {
+  color: #c46060;
+  font-size: 10px;
+}
+
+.stamp-image-placeholder {
+  width: 54%;
+  height: 40%;
+  background: #e2e7ef;
+  border-radius: 3px;
 }
 
 .stamp-item {
@@ -638,15 +821,12 @@ input[type="number"] {
   background: #17233d;
 }
 
-.stamp-item img {
+.stamp-item .stamp-image-wrap {
   width: 38px;
   height: 38px;
-  object-fit: contain;
-  background: #f5f7fb;
-  border-radius: 4px;
 }
 
-.stamp-history.card .stamp-item img {
+.stamp-history.card .stamp-item .stamp-image-wrap {
   width: 42px;
   height: 42px;
 }
@@ -913,11 +1093,9 @@ input[type="range"] {
   background: #17233d;
 }
 
-.managed-stamp-card img {
+.managed-stamp-card .stamp-image-wrap {
   width: 100%;
   height: 88px;
-  object-fit: contain;
-  background: #f5f7fb;
   border-radius: 5px;
 }
 

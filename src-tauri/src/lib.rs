@@ -143,7 +143,7 @@ fn stamp_payload(stamp: &HistoryStamp) -> Result<NativeStampPayload, String> {
         stored_path: stamp.stored_path.clone(),
         mime_type: stamp.mime_type.clone(),
         created_at: stamp.created_at,
-        bytes: fs::read(&stamp.stored_path).map_err(|error| error.to_string())?,
+        bytes: Vec::new(),
     })
 }
 
@@ -252,6 +252,15 @@ fn list_stamps(app: AppHandle) -> Result<Vec<NativeStampPayload>, String> {
 }
 
 #[tauri::command]
+fn read_stamp(app: AppHandle, id: String) -> Result<Vec<u8>, String> {
+    let stamp = read_history(&app)?
+        .into_iter()
+        .find(|stamp| stamp.id == id)
+        .ok_or_else(|| "图章不存在".to_string())?;
+    fs::read(&stamp.stored_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn pick_export_path(payload: PickExportPathPayload) -> Result<Option<String>, String> {
     Ok(FileDialog::new()
         .set_title("导出新文件")
@@ -280,6 +289,7 @@ pub fn run() {
             open_document_paths,
             upload_stamp,
             list_stamps,
+            read_stamp,
             pick_export_path,
             write_export
         ])
