@@ -5,7 +5,7 @@ export type NativeFilePayload = {
   path: string;
   name: string;
   ext: string;
-  bytes: number[];
+  bytes: number[] | Uint8Array;
 };
 
 export type NativeStampPayload = {
@@ -15,7 +15,7 @@ export type NativeStampPayload = {
   previewUrl?: string;
   mimeType: string;
   createdAt: number;
-  bytes: number[];
+  bytes?: number[] | Uint8Array;
 };
 
 export type NativeCloseRequestedEvent = {
@@ -34,7 +34,7 @@ type SaveExportPayload = {
 
 type WriteExportPayload = {
   path: string;
-  bytes: number[];
+  bytes: number[] | Uint8Array;
 };
 
 type BackendStampPayload = {
@@ -76,8 +76,12 @@ async function fileToPayload(file: File): Promise<NativeFilePayload> {
     path: file.name,
     name: file.name,
     ext: extensionForName(file.name),
-    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+    bytes: new Uint8Array(await file.arrayBuffer()),
   };
+}
+
+async function readFileBytes(file: File) {
+  return new Uint8Array(await file.arrayBuffer());
 }
 
 function pickFiles(accept: string) {
@@ -100,8 +104,9 @@ function pickFiles(accept: string) {
   });
 }
 
-function downloadBytes(path: string, bytes: number[]) {
-  const blob = new Blob([new Uint8Array(bytes)], { type: mimeForPath(path) });
+function downloadBytes(path: string, bytes: number[] | Uint8Array) {
+  const copy = new Uint8Array(bytes);
+  const blob = new Blob([copy.buffer], { type: mimeForPath(path) });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -116,11 +121,20 @@ async function uploadFiles(endpoint: string, files: File[]) {
   const form = new FormData();
   files.forEach((file) => form.append('file', file));
   const response = await fetch(endpoint, { method: 'POST', body: form });
-  if (!response.ok) throw new Error(await response.text());
-  return (await response.json()) as BackendStampPayload[];
+  return readJsonResponse<BackendStampPayload[]>(response);
 }
 
-async function stampPayloadFromBackend(item: BackendStampPayload): Promise<NativeStampPayload> {
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  if (!response.ok) throw new Error(body || `请求失败：HTTP ${response.status}`);
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error('服务器返回了无法识别的数据');
+  }
+}
+
+function stampPayloadFromBackend(item: BackendStampPayload): NativeStampPayload {
   return {
     id: item.id,
     originalName: item.originalName,
@@ -132,7 +146,7 @@ async function stampPayloadFromBackend(item: BackendStampPayload): Promise<Nativ
   };
 }
 
-async function stampPayloadFromFile(file: File, item: BackendStampPayload): Promise<NativeStampPayload> {
+function stampPayloadFromFile(bytes: Uint8Array, item: BackendStampPayload): NativeStampPayload {
   return {
     id: item.id,
     originalName: item.originalName,
@@ -140,7 +154,7 @@ async function stampPayloadFromFile(file: File, item: BackendStampPayload): Prom
     previewUrl: item.url,
     mimeType: item.mimeType,
     createdAt: item.createdAt,
-    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+    bytes,
   };
 }
 
@@ -169,8 +183,11 @@ export const sealio = {
     if (!files || files.length === 0) return null;
     const supported = files.filter((file) => supportedDocumentExtensions.has(extensionForName(file.name)));
     if (supported.length === 0) return [];
-    await uploadFiles('/api/uploads', supported);
-    return Promise.all(supported.map(fileToPayload));
+    const [, payloads] = await Promise.all([
+      uploadFiles('/api/uploads', supported),
+      Promise.all(supported.map(fileToPayload)),
+    ]);
+    return payloads;
   },
   openDocumentPaths: (paths: string[]) => {
     if (isTauriRuntime()) return invoke<NativeFilePayload[]>('open_document_paths', { paths });
@@ -179,8 +196,11 @@ export const sealio = {
   openDocumentFiles: async (files: File[]) => {
     const supported = files.filter((file) => supportedDocumentExtensions.has(extensionForName(file.name)));
     if (supported.length === 0) return [];
-    await uploadFiles('/api/uploads', supported);
-    return Promise.all(supported.map(fileToPayload));
+    const [, payloads] = await Promise.all([
+      uploadFiles('/api/uploads', supported),
+      Promise.all(supported.map(fileToPayload)),
+    ]);
+    return payloads;
   },
   uploadStamp: async () => {
     if (isTauriRuntime()) {
@@ -192,8 +212,11 @@ export const sealio = {
     if (!files || files.length === 0) return [];
     const supported = files.filter((file) => supportedStampExtensions.has(extensionForName(file.name)));
     if (supported.length === 0) return [];
-    const uploaded = await uploadFiles('/api/stamps', supported);
-    return Promise.all(uploaded.map((item, index) => stampPayloadFromFile(supported[index], item)));
+    const [uploaded, fileBytes] = await Promise.all([
+      uploadFiles('/api/stamps', supported),
+      Promise.all(supported.map(readFileBytes)),
+    ]);
+    return uploaded.map((item, index) => stampPayloadFromFile(fileBytes[index], item));
   },
   listStamps: async () => {
     if (isTauriRuntime()) {
@@ -202,16 +225,15 @@ export const sealio = {
     }
 
     const response = await fetch('/api/stamps');
-    if (!response.ok) return [];
-    const stamps = (await response.json()) as BackendStampPayload[];
-    return Promise.all(stamps.map(stampPayloadFromBackend));
+    const stamps = await readJsonResponse<BackendStampPayload[]>(response);
+    return stamps.map(stampPayloadFromBackend);
   },
   readStamp: async (payload: ReadStampPayload) => {
     if (isTauriRuntime()) return invoke<number[]>('read_stamp', { id: payload.id });
 
     const response = await fetch(payload.storedPath);
     if (!response.ok) throw new Error('图章读取失败');
-    return Array.from(new Uint8Array(await response.arrayBuffer()));
+    return new Uint8Array(await response.arrayBuffer());
   },
   pickExportPath: (payload: SaveExportPayload) => {
     if (isTauriRuntime()) return invoke<string | null>('pick_export_path', { payload });
@@ -227,7 +249,7 @@ export const sealio = {
     return Promise.resolve();
   },
   closeWindow: () => {
-    if (isTauriRuntime()) return getCurrentWindow().close();
+    if (isTauriRuntime()) return getCurrentWindow().destroy();
     window.close();
     return Promise.resolve();
   },

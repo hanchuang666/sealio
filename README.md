@@ -253,6 +253,8 @@ Sealio 是一个用于在 PDF 或图片文件上加盖图章的工具。当前�
 
 ### 安装依赖
 
+建议使用 Node.js 20（仓库已提供 `.nvmrc`）：
+
 ```bash
 npm ci
 ```
@@ -264,6 +266,14 @@ npm run dev
 ```
 
 ### 仅启动前端开发服务
+
+网页版开发需要先在另一个终端启动本地后端：
+
+```bash
+npm run dev:backend
+```
+
+再启动 Vite；开发服务器和构建预览都会自动代理 `/api` 和 `/files` 请求：
 
 ```bash
 npm run dev:vite

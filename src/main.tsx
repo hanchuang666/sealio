@@ -1,55 +1,27 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import {
+  bytesToObjectUrl,
+  canvasToPngBytes,
+  loadImage,
+  releaseDocumentResources,
+  releaseStampResources,
+} from './media';
 import type { NativeFilePayload, NativeStampPayload } from './native';
 import { isTauriRuntime, sealio } from './native';
+import type {
+  BlendModeKey,
+  DocumentKind,
+  ExportFileType,
+  LoadedDocument,
+  PageRender,
+  StampAsset,
+  StampPlacement,
+} from './types';
 import './styles.css';
 
-type DocumentKind = 'pdf' | 'image';
-type BlendModeKey = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
 type PageViewMode = 'single' | 'multi';
 type StampHistoryView = 'list' | 'card';
-type ExportFileType = 'pdf' | 'png' | 'jpg' | 'jpeg';
-
-type LoadedDocument = {
-  id: string;
-  name: string;
-  path: string;
-  ext: string;
-  kind: DocumentKind;
-  bytes: Uint8Array;
-  pages: PageRender[];
-};
-
-type PageRender = {
-  pageNumber: number;
-  width: number;
-  height: number;
-  dataUrl: string;
-};
-
-type StampAsset = {
-  id: string;
-  originalName: string;
-  mimeType: string;
-  bytes: Uint8Array;
-  objectUrl: string;
-  sourceUrl?: string;
-  isDerived?: boolean;
-};
-
-type StampPlacement = {
-  id: string;
-  documentId: string;
-  stampId: string;
-  pageNumber: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-  opacity: number;
-  blendMode: BlendModeKey;
-};
 
 type PlacementContextMenu = {
   x: number;
@@ -82,23 +54,6 @@ const blendModeLabels: Record<BlendModeKey, string> = {
   lighten: '变亮',
 };
 
-const canvasBlendMap: Record<BlendModeKey, GlobalCompositeOperation> = {
-  normal: 'source-over',
-  multiply: 'multiply',
-  screen: 'screen',
-  overlay: 'overlay',
-  darken: 'darken',
-  lighten: 'lighten',
-};
-
-const pdfBlendModeKeys: Partial<Record<BlendModeKey, 'Multiply' | 'Screen' | 'Overlay' | 'Darken' | 'Lighten'>> = {
-  multiply: 'Multiply',
-  screen: 'Screen',
-  overlay: 'Overlay',
-  darken: 'Darken',
-  lighten: 'Lighten',
-};
-
 const DEFAULT_STAMP_SIZE = 150;
 const SEAM_STAMP_DEFAULT_ROTATION = 0;
 const ZOOM_MIN_PERCENT = 20;
@@ -109,29 +64,6 @@ const unsupportedDocumentFormatMessage = '仅支持PDF、PNG、JPG、JPEG格式�
 const isMacPlatform =
   navigator.platform.toLowerCase().includes('mac') || navigator.userAgent.toLowerCase().includes('mac os');
 const shouldShowWindowSpacer = isTauriRuntime() && isMacPlatform;
-
-type PdfJsModule = typeof import('pdfjs-dist');
-type PdfLibModule = typeof import('pdf-lib');
-
-let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
-let pdfLibModulePromise: Promise<PdfLibModule> | null = null;
-
-async function getPdfJsModule() {
-  if (!pdfJsModulePromise) {
-    pdfJsModulePromise = import('pdfjs-dist').then((module) => {
-      module.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.js', import.meta.url).toString();
-      return module;
-    });
-  }
-  return pdfJsModulePromise;
-}
-
-async function getPdfLibModule() {
-  if (!pdfLibModulePromise) {
-    pdfLibModulePromise = import('pdf-lib');
-  }
-  return pdfLibModulePromise;
-}
 
 function IconOpenFile() {
   return (
@@ -159,13 +91,8 @@ function clampZoomPercent(value: number) {
   return Math.min(ZOOM_MAX_PERCENT, Math.max(ZOOM_MIN_PERCENT, Math.round(value)));
 }
 
-function toUint8Array(bytes: number[]) {
-  return new Uint8Array(bytes);
-}
-
-function bytesToObjectUrl(bytes: Uint8Array, mimeType: string) {
-  const copy = new Uint8Array(bytes);
-  return URL.createObjectURL(new Blob([copy.buffer], { type: mimeType }));
+function toUint8Array(bytes: number[] | Uint8Array) {
+  return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 }
 
 function extensionToMime(ext: string) {
@@ -199,10 +126,6 @@ function ensureExportPathExtension(path: string, fileType: ExportFileType) {
   return exportFileTypeFromPath(path) ? path : `${path}.${fileType}`;
 }
 
-function imageMimeForExport(fileType: ExportFileType) {
-  return fileType === 'png' ? 'image/png' : 'image/jpeg';
-}
-
 function displayNameWithoutExtension(name: string) {
   return name.replace(/\.[^/.]+$/, '');
 }
@@ -228,7 +151,7 @@ function fuzzyMatchStampName(name: string, keyword: string) {
   });
 }
 
-function StampImage({ stamp }: { stamp: StampAsset }) {
+const StampImage = React.memo(function StampImage({ stamp }: { stamp: StampAsset }) {
   const [isLoaded, setIsLoaded] = React.useState(false);
   const [hasError, setHasError] = React.useState(false);
 
@@ -251,7 +174,7 @@ function StampImage({ stamp }: { stamp: StampAsset }) {
       />
     </span>
   );
-}
+});
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -270,7 +193,7 @@ function formatErrorMessage(error: unknown) {
 }
 
 function stampAssetFromPayload(item: NativeStampPayload): StampAsset {
-  const bytes = toUint8Array(item.bytes);
+  const bytes = toUint8Array(item.bytes ?? []);
   const sourceUrl = item.storedPath || undefined;
   return {
     id: item.id,
@@ -280,12 +203,6 @@ function stampAssetFromPayload(item: NativeStampPayload): StampAsset {
     objectUrl: bytes.byteLength > 0 ? bytesToObjectUrl(bytes, item.mimeType) : item.previewUrl || sourceUrl || '',
     sourceUrl,
   };
-}
-
-async function ensureStampBytes(stamp: StampAsset) {
-  if (stamp.bytes.byteLength > 0) return stamp.bytes;
-  if (!stamp.sourceUrl) throw new Error(`图章未加载：${stamp.originalName}`);
-  return toUint8Array(await sealio.readStamp({ id: stamp.id, storedPath: stamp.sourceUrl }));
 }
 
 function createId() {
@@ -298,70 +215,6 @@ function createId() {
       ? Array.from(crypto.getRandomValues(new Uint32Array(2)))
       : [Math.floor(Math.random() * 0xffffffff), Math.floor(Math.random() * 0xffffffff)];
   return `${Date.now().toString(36)}-${randomValues.map((value) => value.toString(36)).join('-')}`;
-}
-
-async function renderPdfPages(bytes: Uint8Array): Promise<PageRender[]> {
-  const pdfJsModule = await getPdfJsModule();
-  const loadingTask = pdfJsModule.getDocument({ data: bytes.slice() });
-  const pdf = await loadingTask.promise;
-  const pages: PageRender[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 1.35 });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('无法创建 PDF 渲染画布');
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    await page.render({ canvasContext: context, viewport }).promise;
-    pages.push({
-      pageNumber,
-      width: canvas.width,
-      height: canvas.height,
-      dataUrl: canvas.toDataURL('image/png'),
-    });
-  }
-
-  return pages;
-}
-
-async function renderImagePage(bytes: Uint8Array, mimeType: string): Promise<PageRender[]> {
-  const objectUrl = bytesToObjectUrl(bytes, mimeType);
-  const image = await loadImage(objectUrl);
-  const maxWidth = 900;
-  const scale = Math.min(1, maxWidth / image.naturalWidth);
-  return [
-    {
-      pageNumber: 1,
-      width: Math.round(image.naturalWidth * scale),
-      height: Math.round(image.naturalHeight * scale),
-      dataUrl: objectUrl,
-    },
-  ];
-}
-
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = reject;
-    image.src = src;
-  });
-}
-
-async function encodeCanvasBytes(canvas: HTMLCanvasElement, mimeType: string) {
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('导出图片失败'))), mimeType, 0.92);
-  });
-  return Array.from(new Uint8Array(await blob.arrayBuffer()));
-}
-
-async function canvasToPngBytes(canvas: HTMLCanvasElement) {
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('图章切割失败'))), 'image/png');
-  });
-  return new Uint8Array(await blob.arrayBuffer());
 }
 
 function App() {
@@ -401,6 +254,16 @@ function App() {
   const stampPointerDrag = React.useRef<StampPointerDrag | null>(null);
   const documentTabDrag = React.useRef<DocumentTabDrag | null>(null);
   const isDocumentLoadingRef = React.useRef(false);
+  const documentsRef = React.useRef<LoadedDocument[]>([]);
+  const stampsRef = React.useRef<StampAsset[]>([]);
+  const pointerMoveFrame = React.useRef<number | null>(null);
+  const pendingPointerPoint = React.useRef<{ x: number; y: number } | null>(null);
+  const selectedPlacementIdRef = React.useRef<string | null>(null);
+  const deletePlacementRef = React.useRef<(id: string) => void>(() => undefined);
+  const pointerHandlersRef = React.useRef({
+    move: (_clientX: number, _clientY: number) => undefined,
+    end: (_clientX: number, _clientY: number) => undefined,
+  });
   const suppressNextTabClick = React.useRef(false);
   const shouldCloseAppRef = React.useRef(false);
   const pointerAction = React.useRef<
@@ -416,6 +279,9 @@ function App() {
     | { kind: 'rotate'; id: string; centerX: number; centerY: number; originRotation: number; startAngle: number }
     | null
   >(null);
+
+  documentsRef.current = documents;
+  stampsRef.current = stamps;
 
   React.useEffect(() => {
     let mounted = true;
@@ -440,6 +306,13 @@ function App() {
       });
     return () => {
       mounted = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      documentsRef.current.forEach(releaseDocumentResources);
+      stampsRef.current.forEach(releaseStampResources);
     };
   }, []);
 
@@ -486,16 +359,33 @@ function App() {
   const documentFile = documents.find((item) => item.id === activeDocumentId) ?? null;
   const selectedPlacement =
     placements.find((item) => item.id === selectedPlacementId && item.documentId === activeDocumentId) ?? null;
-  const selectedStamp = stamps.find((stamp) => stamp.id === selectedStampId) ?? null;
-  const visibleStamps = stamps.filter((stamp) => !stamp.isDerived);
-  const filteredStamps = visibleStamps.filter((stamp) => fuzzyMatchStampName(stamp.originalName, stampSearchKeyword));
-  const activePlacements = documentFile
-    ? placements.filter((placement) => placement.documentId === documentFile.id)
-    : [];
-  const visiblePages =
-    documentFile && pageViewMode === 'single'
-      ? documentFile.pages.filter((page) => page.pageNumber === activePageNumber)
-      : documentFile?.pages ?? [];
+  const stampById = React.useMemo(() => new Map(stamps.map((stamp) => [stamp.id, stamp])), [stamps]);
+  const selectedStamp = (selectedStampId ? stampById.get(selectedStampId) : null) ?? null;
+  const visibleStamps = React.useMemo(() => stamps.filter((stamp) => !stamp.isDerived), [stamps]);
+  const filteredStamps = React.useMemo(
+    () => visibleStamps.filter((stamp) => fuzzyMatchStampName(stamp.originalName, stampSearchKeyword)),
+    [visibleStamps, stampSearchKeyword],
+  );
+  const activePlacements = React.useMemo(
+    () => (documentFile ? placements.filter((placement) => placement.documentId === documentFile.id) : []),
+    [documentFile, placements],
+  );
+  const activePlacementsByPage = React.useMemo(() => {
+    const grouped = new Map<number, StampPlacement[]>();
+    activePlacements.forEach((placement) => {
+      const pagePlacements = grouped.get(placement.pageNumber);
+      if (pagePlacements) pagePlacements.push(placement);
+      else grouped.set(placement.pageNumber, [placement]);
+    });
+    return grouped;
+  }, [activePlacements]);
+  const visiblePages = React.useMemo(
+    () =>
+      documentFile && pageViewMode === 'single'
+        ? documentFile.pages.filter((page) => page.pageNumber === activePageNumber)
+        : documentFile?.pages ?? [],
+    [activePageNumber, documentFile, pageViewMode],
+  );
   const contextPlacement =
     placementContextMenu && activeDocumentId
       ? placements.find((item) => item.id === placementContextMenu.placementId && item.documentId === activeDocumentId) ?? null
@@ -505,6 +395,9 @@ function App() {
     : null;
   const dirtyDocuments = documents.filter((item) => dirtyDocumentIds.has(item.id));
   const canCreateSeamStamp = Boolean(documentFile?.kind === 'pdf' && documentFile.pages.length > 1 && contextPlacement);
+
+  selectedPlacementIdRef.current = selectedPlacementId;
+  deletePlacementRef.current = deletePlacement;
 
   React.useEffect(() => {
     setZoomInputValue(String(Math.round(zoom * 100)));
@@ -655,35 +548,42 @@ function App() {
     function onKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select')) return;
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedPlacementId) {
+      const placementId = selectedPlacementIdRef.current;
+      if ((event.key === 'Delete' || event.key === 'Backspace') && placementId) {
         event.preventDefault();
-        deletePlacement(selectedPlacementId);
+        deletePlacementRef.current(placementId);
         setPlacementContextMenu(null);
       }
     }
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedPlacementId, placements]);
+  }, []);
 
   async function importDocumentPayloads(payloads: NativeFilePayload[]) {
     setStatus(`正在渲染 ${payloads.length} 个文件...`);
     const loadedDocuments: LoadedDocument[] = [];
 
-    for (const payload of payloads) {
-      const bytes = toUint8Array(payload.bytes);
-      const ext = payload.ext.toLowerCase();
-      const kind: DocumentKind = ext === 'pdf' ? 'pdf' : 'image';
-      const pages = kind === 'pdf' ? await renderPdfPages(bytes) : await renderImagePage(bytes, extensionToMime(ext));
-      loadedDocuments.push({
-        id: createId(),
-        name: payload.name,
-        path: payload.path,
-        ext,
-        kind,
-        bytes,
-        pages,
-      });
+    try {
+      const { renderDocumentPages } = await import('./document-renderer');
+      for (const payload of payloads) {
+        const bytes = toUint8Array(payload.bytes);
+        const ext = payload.ext.toLowerCase();
+        const kind: DocumentKind = ext === 'pdf' ? 'pdf' : 'image';
+        const pages = await renderDocumentPages(bytes, kind, extensionToMime(ext));
+        loadedDocuments.push({
+          id: createId(),
+          name: payload.name,
+          path: payload.path,
+          ext,
+          kind,
+          bytes,
+          pages,
+        });
+      }
+    } catch (error) {
+      loadedDocuments.forEach(releaseDocumentResources);
+      throw error;
     }
 
     setDocuments((current) => [...current, ...loadedDocuments]);
@@ -1004,8 +904,16 @@ function App() {
   function deletePlacement(id: string) {
     const target = placements.find((item) => item.id === id);
     if (!target) return;
+    const targetStamp = stampById.get(target.stampId);
+    const shouldReleaseDerivedStamp =
+      Boolean(targetStamp?.isDerived) && !placements.some((item) => item.id !== id && item.stampId === target.stampId);
     markDocumentDirty(target.documentId);
     setPlacements((current) => current.filter((item) => item.id !== id));
+    if (targetStamp && shouldReleaseDerivedStamp) {
+      releaseStampResources(targetStamp);
+      setStamps((current) => current.filter((stamp) => stamp.id !== targetStamp.id));
+      setSelectedStampId((current) => (current === targetStamp.id ? null : current));
+    }
     setSelectedPlacementId((current) => (current === id ? null : current));
     setStatus('已删除图章');
   }
@@ -1014,70 +922,86 @@ function App() {
     if (!documentFile || documentFile.kind !== 'pdf' || documentFile.pages.length <= 1) return;
     const sourcePlacement = placements.find((item) => item.id === placementId && item.documentId === documentFile.id);
     if (!sourcePlacement) return;
-    const sourceStamp = stamps.find((item) => item.id === sourcePlacement.stampId);
+    const sourceStamp = stampById.get(sourcePlacement.stampId);
     if (!sourceStamp) return;
 
     const pageCount = documentFile.pages.length;
-    const sourceImage = await loadImage(sourceStamp.objectUrl);
     const sliceAssets: StampAsset[] = [];
     const slicePlacements: StampPlacement[] = [];
-    const sliceWidth = Math.max(18, sourcePlacement.width / pageCount);
-    const sliceHeight = sourcePlacement.height;
-    const sourcePage =
-      documentFile.pages.find((page) => page.pageNumber === sourcePlacement.pageNumber) ?? documentFile.pages[0];
-    const sourceCenterYRatio = Math.min(
-      1,
-      Math.max(0, (sourcePlacement.y + sourcePlacement.height / 2) / sourcePage.height),
-    );
-    for (let index = 0; index < pageCount; index += 1) {
-      const startX = Math.floor((sourceImage.naturalWidth * index) / pageCount);
-      const endX = Math.floor((sourceImage.naturalWidth * (index + 1)) / pageCount);
-      const sourceWidth = Math.max(1, endX - startX);
-      const canvas = document.createElement('canvas');
-      canvas.width = sourceWidth;
-      canvas.height = sourceImage.naturalHeight;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('无法切割骑缝章');
-      context.drawImage(sourceImage, startX, 0, sourceWidth, sourceImage.naturalHeight, 0, 0, sourceWidth, sourceImage.naturalHeight);
-      const bytes = await canvasToPngBytes(canvas);
-      const stampId = createId();
-      const page = documentFile.pages[index];
-      const x = Math.max(0, page.width - sliceWidth);
-      const y = Math.min(
-        Math.max(0, page.height * sourceCenterYRatio - sliceHeight / 2),
-        Math.max(0, page.height - sliceHeight),
+    try {
+      const sourceImage = await loadImage(sourceStamp.objectUrl);
+      const sliceWidth = Math.max(18, sourcePlacement.width / pageCount);
+      const sliceHeight = sourcePlacement.height;
+      const sourcePage =
+        documentFile.pages.find((page) => page.pageNumber === sourcePlacement.pageNumber) ?? documentFile.pages[0];
+      const sourceCenterYRatio = Math.min(
+        1,
+        Math.max(0, (sourcePlacement.y + sourcePlacement.height / 2) / sourcePage.height),
       );
+      for (let index = 0; index < pageCount; index += 1) {
+        const startX = Math.floor((sourceImage.naturalWidth * index) / pageCount);
+        const endX = Math.floor((sourceImage.naturalWidth * (index + 1)) / pageCount);
+        const sourceWidth = Math.max(1, endX - startX);
+        const canvas = document.createElement('canvas');
+        canvas.width = sourceWidth;
+        canvas.height = sourceImage.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('无法切割骑缝章');
+        context.drawImage(
+          sourceImage,
+          startX,
+          0,
+          sourceWidth,
+          sourceImage.naturalHeight,
+          0,
+          0,
+          sourceWidth,
+          sourceImage.naturalHeight,
+        );
+        const bytes = await canvasToPngBytes(canvas);
+        const stampId = createId();
+        const page = documentFile.pages[index];
+        const x = Math.max(0, page.width - sliceWidth);
+        const y = Math.min(
+          Math.max(0, page.height * sourceCenterYRatio - sliceHeight / 2),
+          Math.max(0, page.height - sliceHeight),
+        );
 
-      sliceAssets.push({
-        id: stampId,
-        originalName: `${displayNameWithoutExtension(sourceStamp.originalName)}-骑缝-${index + 1}.png`,
-        mimeType: 'image/png',
-        bytes,
-        objectUrl: bytesToObjectUrl(bytes, 'image/png'),
-        isDerived: true,
-      });
+        sliceAssets.push({
+          id: stampId,
+          originalName: `${displayNameWithoutExtension(sourceStamp.originalName)}-骑缝-${index + 1}.png`,
+          mimeType: 'image/png',
+          bytes,
+          objectUrl: bytesToObjectUrl(bytes, 'image/png'),
+          isDerived: true,
+        });
 
-      slicePlacements.push({
-        id: createId(),
-        documentId: documentFile.id,
-        stampId,
-        pageNumber: page.pageNumber,
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.round(sliceWidth),
-        height: Math.round(sliceHeight),
-        rotation: SEAM_STAMP_DEFAULT_ROTATION,
-        opacity: sourcePlacement.opacity,
-        blendMode: sourcePlacement.blendMode,
-      });
+        slicePlacements.push({
+          id: createId(),
+          documentId: documentFile.id,
+          stampId,
+          pageNumber: page.pageNumber,
+          x: Math.round(x),
+          y: Math.round(y),
+          width: Math.round(sliceWidth),
+          height: Math.round(sliceHeight),
+          rotation: SEAM_STAMP_DEFAULT_ROTATION,
+          opacity: sourcePlacement.opacity,
+          blendMode: sourcePlacement.blendMode,
+        });
+      }
+
+      setStamps((current) => [...current, ...sliceAssets]);
+      setPlacements((current) => [...current, ...slicePlacements]);
+      markDocumentDirty(documentFile.id);
+      setSelectedPlacementId(slicePlacements[0]?.id ?? sourcePlacement.id);
+      setPlacementContextMenu(null);
+      setStatus(`已生成 ${pageCount} 页骑缝章`);
+    } catch (error) {
+      sliceAssets.forEach(releaseStampResources);
+      setPlacementContextMenu(null);
+      setStatus(`骑缝章生成失败：${formatErrorMessage(error)}`);
     }
-
-    setStamps((current) => [...current, ...sliceAssets]);
-    setPlacements((current) => [...current, ...slicePlacements]);
-    markDocumentDirty(documentFile.id);
-    setSelectedPlacementId(slicePlacements[0]?.id ?? sourcePlacement.id);
-    setPlacementContextMenu(null);
-    setStatus(`已生成 ${pageCount} 页骑缝章`);
   }
 
   function angleFromCenter(clientX: number, clientY: number, centerX: number, centerY: number) {
@@ -1158,28 +1082,56 @@ function App() {
     pointerAction.current = null;
   }
 
+  pointerHandlersRef.current = {
+    move(clientX, clientY) {
+      movePointerAction(clientX, clientY);
+      moveStampPointerDrag(clientX, clientY);
+      moveDocumentTabDrag(clientX, clientY);
+    },
+    end(clientX, clientY) {
+      finishStampPointerDrag(clientX, clientY);
+      finishDocumentTabDrag();
+      stopPointerAction();
+    },
+  };
+
   React.useEffect(() => {
+    function flushPointerMove() {
+      pointerMoveFrame.current = null;
+      const point = pendingPointerPoint.current;
+      pendingPointerPoint.current = null;
+      if (point) pointerHandlersRef.current.move(point.x, point.y);
+    }
+
     function onWindowPointerMove(event: PointerEvent) {
-      movePointerAction(event.clientX, event.clientY);
-      moveStampPointerDrag(event.clientX, event.clientY);
-      moveDocumentTabDrag(event.clientX, event.clientY);
+      pendingPointerPoint.current = { x: event.clientX, y: event.clientY };
+      if (pointerMoveFrame.current === null) {
+        pointerMoveFrame.current = window.requestAnimationFrame(flushPointerMove);
+      }
     }
 
     function onWindowPointerEnd(event: PointerEvent) {
-      finishStampPointerDrag(event.clientX, event.clientY);
-      finishDocumentTabDrag();
-      stopPointerAction();
+      if (pointerMoveFrame.current !== null) {
+        window.cancelAnimationFrame(pointerMoveFrame.current);
+        pointerMoveFrame.current = null;
+      }
+      pendingPointerPoint.current = null;
+      pointerHandlersRef.current.move(event.clientX, event.clientY);
+      pointerHandlersRef.current.end(event.clientX, event.clientY);
     }
 
     window.addEventListener('pointermove', onWindowPointerMove);
     window.addEventListener('pointerup', onWindowPointerEnd);
     window.addEventListener('pointercancel', onWindowPointerEnd);
     return () => {
+      if (pointerMoveFrame.current !== null) window.cancelAnimationFrame(pointerMoveFrame.current);
+      pointerMoveFrame.current = null;
+      pendingPointerPoint.current = null;
       window.removeEventListener('pointermove', onWindowPointerMove);
       window.removeEventListener('pointerup', onWindowPointerEnd);
       window.removeEventListener('pointercancel', onWindowPointerEnd);
     };
-  });
+  }, []);
 
   function activateDocument(documentId: string) {
     const nextDocument = documents.find((item) => item.id === documentId);
@@ -1213,9 +1165,25 @@ function App() {
     const index = documents.findIndex((item) => item.id === documentId);
     const nextDocuments = documents.filter((item) => item.id !== documentId);
     const shouldSwitchActive = documentId === activeDocumentId || !nextDocuments.some((item) => item.id === activeDocumentId);
+    const documentStampIds = new Set(
+      placements.filter((placement) => placement.documentId === documentId).map((placement) => placement.stampId),
+    );
+    const derivedStampsToRelease = stamps.filter(
+      (stamp) =>
+        stamp.isDerived &&
+        documentStampIds.has(stamp.id) &&
+        !placements.some((placement) => placement.documentId !== documentId && placement.stampId === stamp.id),
+    );
+    const derivedStampIds = new Set(derivedStampsToRelease.map((stamp) => stamp.id));
 
+    if (targetDocument) releaseDocumentResources(targetDocument);
+    derivedStampsToRelease.forEach(releaseStampResources);
     setDocuments(nextDocuments);
     setPlacements((current) => current.filter((placement) => placement.documentId !== documentId));
+    if (derivedStampIds.size > 0) {
+      setStamps((current) => current.filter((stamp) => !derivedStampIds.has(stamp.id)));
+      setSelectedStampId((current) => (current && derivedStampIds.has(current) ? null : current));
+    }
     markDocumentClean(documentId);
     if (shouldSwitchActive) {
       const fallback = nextDocuments[Math.max(0, index - 1)] ?? nextDocuments[0] ?? null;
@@ -1233,7 +1201,6 @@ function App() {
       await sealio.closeWindow();
     } catch (error) {
       shouldCloseAppRef.current = false;
-      setIsExitConfirmOpen(false);
       setStatus(`关闭软件失败：${formatErrorMessage(error)}`);
     }
   }
@@ -1256,10 +1223,12 @@ function App() {
 
       const targetType = exportFileTypeFromPath(selectedPath) ?? defaultType;
       const exportPath = ensureExportPathExtension(selectedPath, targetType);
-      const bytes =
+      const { exportDocumentAsImage, exportDocumentAsPdf } = await import('./document-exporter');
+      const exportedBytes =
         targetType === 'pdf'
-          ? Array.from(await exportDocumentAsPdf(documentFile, activePlacements, stamps))
+          ? await exportDocumentAsPdf(documentFile, activePlacements, stamps)
           : await exportDocumentAsImage(documentFile, activePlacements, stamps, targetType, activePageNumber);
+      const bytes = isTauriRuntime() ? Array.from(exportedBytes) : exportedBytes;
       const path = await sealio.writeExport({ path: exportPath, bytes });
       markDocumentClean(documentFile.id);
       setStatus(`已导出 ${path}`);
@@ -1460,64 +1429,62 @@ function App() {
                     onDoubleClick={(event) => addStampAtPointer(page, event)}
                   >
                     <img src={page.dataUrl} alt={`第${page.pageNumber}页`} draggable={false} />
-                    {activePlacements
-                      .filter((placement) => placement.pageNumber === page.pageNumber)
-                      .map((placement) => {
-                        const stamp = stamps.find((item) => item.id === placement.stampId);
-                        if (!stamp) return null;
-                        const selected = placement.id === selectedPlacementId;
-                        return (
-                          <button
-                            className={`stamp-placement ${selected ? 'selected' : ''}`}
-                            key={placement.id}
-                            title={`图章：${displayNameWithoutExtension(stamp.originalName)}`}
-                            style={{
-                              left: placement.x * zoom,
-                              top: placement.y * zoom,
-                              width: placement.width * zoom,
-                              height: placement.height * zoom,
-                              opacity: placement.opacity,
-                              mixBlendMode: placement.blendMode,
-                              transform: `rotate(${placement.rotation}deg)`,
-                            }}
-                            onPointerDown={(event) => startPlacementPointer(event, placement)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setSelectedPlacementId(placement.id);
-                              setPlacementContextMenu({
-                                x: event.clientX,
-                                y: event.clientY,
-                                placementId: placement.id,
-                              });
-                            }}
-                            onDoubleClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                            }}
-                          >
-                            <img src={stamp.objectUrl} alt={stamp.originalName} draggable={false} />
-                            {selected && (
-                              <>
-                                <span
-                                  className="resize-handle"
-                                  title="拖动缩放"
-                                  onPointerDown={(event) => startResize(event, placement)}
-                                />
-                                <span
-                                  className="rotate-handle"
-                                  title="拖动旋转"
-                                  onPointerDown={(event) => {
-                                    event.stopPropagation();
-                                    event.currentTarget.setPointerCapture(event.pointerId);
-                                    startRotate(event, placement);
-                                  }}
-                                />
-                              </>
-                            )}
-                          </button>
-                        );
-                      })}
+                    {(activePlacementsByPage.get(page.pageNumber) ?? []).map((placement) => {
+                      const stamp = stampById.get(placement.stampId);
+                      if (!stamp) return null;
+                      const selected = placement.id === selectedPlacementId;
+                      return (
+                        <button
+                          className={`stamp-placement ${selected ? 'selected' : ''}`}
+                          key={placement.id}
+                          title={`图章：${displayNameWithoutExtension(stamp.originalName)}`}
+                          style={{
+                            left: placement.x * zoom,
+                            top: placement.y * zoom,
+                            width: placement.width * zoom,
+                            height: placement.height * zoom,
+                            opacity: placement.opacity,
+                            mixBlendMode: placement.blendMode,
+                            transform: `rotate(${placement.rotation}deg)`,
+                          }}
+                          onPointerDown={(event) => startPlacementPointer(event, placement)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setSelectedPlacementId(placement.id);
+                            setPlacementContextMenu({
+                              x: event.clientX,
+                              y: event.clientY,
+                              placementId: placement.id,
+                            });
+                          }}
+                          onDoubleClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                        >
+                          <img src={stamp.objectUrl} alt={stamp.originalName} draggable={false} />
+                          {selected && (
+                            <>
+                              <span
+                                className="resize-handle"
+                                title="拖动缩放"
+                                onPointerDown={(event) => startResize(event, placement)}
+                              />
+                              <span
+                                className="rotate-handle"
+                                title="拖动旋转"
+                                onPointerDown={(event) => {
+                                  event.stopPropagation();
+                                  event.currentTarget.setPointerCapture(event.pointerId);
+                                  startRotate(event, placement);
+                                }}
+                              />
+                            </>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                   <div className="page-label">第{page.pageNumber}页</div>
                 </div>
@@ -1719,7 +1686,7 @@ function App() {
 
       {stampDragPreview &&
         (() => {
-          const stamp = stamps.find((item) => item.id === stampDragPreview.stampId);
+          const stamp = stampById.get(stampDragPreview.stampId);
           if (!stamp) return null;
           return (
             <div className="stamp-drag-preview" style={{ left: stampDragPreview.x, top: stampDragPreview.y }}>
@@ -1834,110 +1801,6 @@ function App() {
       )}
     </div>
   );
-}
-
-async function exportPdf(documentFile: LoadedDocument, placements: StampPlacement[], stamps: StampAsset[]) {
-  const { PDFDocument, BlendMode, degrees } = await getPdfLibModule();
-  const pdfDoc = await PDFDocument.load(documentFile.bytes);
-  const pages = pdfDoc.getPages();
-  const stampBytesCache = new Map<string, Uint8Array>();
-
-  for (const placement of placements) {
-    const page = pages[placement.pageNumber - 1];
-    const renderedPage = documentFile.pages.find((item) => item.pageNumber === placement.pageNumber);
-    const stamp = stamps.find((item) => item.id === placement.stampId);
-    if (!page || !renderedPage || !stamp) continue;
-
-    let stampBytes = stampBytesCache.get(stamp.id);
-    if (!stampBytes) {
-      stampBytes = await ensureStampBytes(stamp);
-      stampBytesCache.set(stamp.id, stampBytes);
-    }
-    const embedded = stamp.mimeType === 'image/png' ? await pdfDoc.embedPng(stampBytes) : await pdfDoc.embedJpg(stampBytes);
-    const { width: pdfWidth, height: pdfHeight } = page.getSize();
-    const x = (placement.x / renderedPage.width) * pdfWidth;
-    const width = (placement.width / renderedPage.width) * pdfWidth;
-    const height = (placement.height / renderedPage.height) * pdfHeight;
-    const y = pdfHeight - ((placement.y / renderedPage.height) * pdfHeight + height);
-
-    const blendModeKey = pdfBlendModeKeys[placement.blendMode];
-    const blendMode = blendModeKey ? BlendMode[blendModeKey] : undefined;
-
-    page.drawImage(embedded, {
-      x,
-      y,
-      width,
-      height,
-      rotate: degrees(placement.rotation),
-      opacity: placement.opacity,
-      blendMode,
-    });
-  }
-
-  return pdfDoc.save();
-}
-
-async function exportDocumentAsPdf(documentFile: LoadedDocument, placements: StampPlacement[], stamps: StampAsset[]) {
-  if (documentFile.kind === 'pdf') return exportPdf(documentFile, placements, stamps);
-
-  const { PDFDocument } = await getPdfLibModule();
-  const page = documentFile.pages[0];
-  const imageBytes = await exportPageAsImage(documentFile, placements, stamps, 1, 'image/png');
-  const pdfDoc = await PDFDocument.create();
-  const pdfPage = pdfDoc.addPage([page.width, page.height]);
-  const image = await pdfDoc.embedPng(new Uint8Array(imageBytes));
-  pdfPage.drawImage(image, {
-    x: 0,
-    y: 0,
-    width: page.width,
-    height: page.height,
-  });
-  return pdfDoc.save();
-}
-
-async function exportDocumentAsImage(
-  documentFile: LoadedDocument,
-  placements: StampPlacement[],
-  stamps: StampAsset[],
-  fileType: ExportFileType,
-  activePageNumber: number,
-) {
-  const pageNumber = documentFile.kind === 'pdf' ? activePageNumber : 1;
-  return exportPageAsImage(documentFile, placements, stamps, pageNumber, imageMimeForExport(fileType));
-}
-
-async function exportPageAsImage(
-  documentFile: LoadedDocument,
-  placements: StampPlacement[],
-  stamps: StampAsset[],
-  pageNumber: number,
-  mimeType: string,
-) {
-  const page = documentFile.pages.find((item) => item.pageNumber === pageNumber) ?? documentFile.pages[0];
-  const source = await loadImage(page.dataUrl);
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('无法创建图片导出画布');
-  canvas.width = page.width;
-  canvas.height = page.height;
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, page.width, page.height);
-  context.drawImage(source, 0, 0, page.width, page.height);
-
-  for (const placement of placements.filter((item) => item.pageNumber === page.pageNumber)) {
-    const stamp = stamps.find((item) => item.id === placement.stampId);
-    if (!stamp) continue;
-    const image = await loadImage(stamp.objectUrl);
-    context.save();
-    context.globalAlpha = placement.opacity;
-    context.globalCompositeOperation = canvasBlendMap[placement.blendMode];
-    context.translate(placement.x + placement.width / 2, placement.y + placement.height / 2);
-    context.rotate((placement.rotation * Math.PI) / 180);
-    context.drawImage(image, -placement.width / 2, -placement.height / 2, placement.width, placement.height);
-    context.restore();
-  }
-
-  return encodeCanvasBytes(canvas, mimeType);
 }
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(

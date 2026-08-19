@@ -26,7 +26,11 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 
 ### 前端关键文件
 
-- `src/main.tsx`：主应用入口，包含文档打开、图章管理、图章放置、导出等核心逻辑。
+- `src/main.tsx`：主应用入口，负责界面状态、图章放置和交互编排。
+- `src/types.ts`：文档、页面、图章和放置数据的共享类型。
+- `src/media.ts`：图片、Canvas、Blob URL 的创建与资源释放工具。
+- `src/document-renderer.ts`：按需加载 PDF.js 并生成文档页面预览。
+- `src/document-exporter.ts`：按需加载 PDF-lib，负责 PDF 和图片导出。
 - `src/native.ts`：多端适配层，统一封装 Web 与 Tauri 桌面端差异。
 - `src/styles.css`：应用整体样式，包括图章列表、加载状态、编辑区、弹窗等。
 - `vite.config.ts`：Vite 构建配置。
@@ -35,8 +39,12 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 ### 前端性能策略
 
 - PDF 相关库采用动态加载，避免首屏一次性下载完整 PDF 引擎。
+- React 运行时拆为稳定缓存块，频繁发布时浏览器无需重复下载未变化的框架代码。
+- PDF 页面预览使用 Blob URL，关闭文件或退出时主动释放，避免 Base64 占用额外内存。
 - 图章列表采用“先加载元数据，再懒加载图片”的方式，避免大量图章阻塞页面显示。
 - 图章真实 bytes 在导出时按需读取，并在导出过程中缓存，避免同一图章重复下载或读取。
+- PDF 导出复用已嵌入的图章对象，图片导出复用已解码图片，降低重复处理和输出体积。
+- `npm run build` 会执行产物体积预算检查，阻止异常膨胀进入发布流程。
 
 ## 多端适配层
 
@@ -102,7 +110,6 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 - `server/sealio_backend.py`：后端 API 服务。
 - `deploy/sealio-backend.service`：systemd 服务配置。
 - `deploy/nginx-sealio.conf`：Nginx 反向代理与静态资源配置模板。
-- `deploy/index.html`：早期后端验证页，正式部署时由 React 构建产物替换。
 
 ### 后端接口
 
@@ -112,12 +119,12 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 | `/api/stamps` | `GET` | 获取图章元数据列表。 |
 | `/api/stamps` | `POST` | 上传图章文件。 |
 | `/api/uploads` | `POST` | 上传临时处理文件。 |
-| `/files/stamps/<file>` | `GET` | 由 Nginx 提供图章静态访问。 |
-| `/files/uploads/<file>` | `GET` | 由 Nginx 提供临时文件静态访问。 |
+| `/files/stamps/<file>` | `GET` | 图章静态访问；生产环境由 Nginx 承接。 |
+| `/files/uploads/<file>` | `GET` | 临时文件静态访问；生产环境由 Nginx 承接。 |
 
 ### 后端数据目录
 
-默认数据目录为 `/var/lib/sealio`：
+本地开发默认写入仓库根目录的 `.sealio-data`；systemd 部署模板会把 `SEALIO_DATA_DIR` 设置为 `/var/lib/sealio`：
 
 - `/var/lib/sealio/stamps`：持久化图章图片。
 - `/var/lib/sealio/uploads`：临时上传文件。
@@ -130,6 +137,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 - `SEALIO_DATA_DIR`：数据目录，部署中默认为 `/var/lib/sealio`。
 - `SEALIO_MAX_UPLOAD_BYTES`：最大上传大小。
 - `SEALIO_UPLOAD_TTL_SECONDS`：临时上传文件保留时间。
+- `SEALIO_UPLOAD_CLEANUP_INTERVAL_SECONDS`：临时文件目录清理检查间隔，默认 60 秒。
 
 ## 部署技术栈
 
@@ -166,6 +174,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 
 ```bash
 npm run dev          # 启动 Tauri 桌面开发模式
+npm run dev:backend  # 启动 Web 本地开发后端（数据写入 .sealio-data）
 npm run dev:vite     # 仅启动 Vite 前端开发服务
 npm run build        # TypeScript 检查并构建 Web 产物
 npm run preview      # 预览 Vite 构建产物
@@ -227,7 +236,11 @@ PATH="$HOME/.cargo/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml
 ```text
 .
 ├── src/
-│   ├── main.tsx              # React 主应用
+│   ├── main.tsx              # React 主应用与交互编排
+│   ├── types.ts              # 共享领域类型
+│   ├── media.ts              # 图片、Canvas 与资源生命周期
+│   ├── document-renderer.ts  # 文档预览渲染
+│   ├── document-exporter.ts  # PDF / 图片导出
 │   ├── native.ts             # Web / Tauri 多端适配层
 │   └── styles.css            # 应用样式
 ├── src-tauri/
@@ -239,9 +252,9 @@ PATH="$HOME/.cargo/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml
 │   └── sealio_backend.py     # Web 后端 API
 ├── deploy/
 │   ├── nginx-sealio.conf     # Nginx 配置模板
-│   ├── sealio-backend.service# systemd 服务模板
-│   └── index.html            # 后端验证页
+│   └── sealio-backend.service # systemd 服务模板
 ├── scripts/
+│   ├── check-bundle-size.mjs # Web 产物体积预算检查
 │   └── package-mac-tauri.sh  # macOS 打包脚本
 ├── .github/workflows/
 │   ├── windows-build.yml     # Windows 构建 CI

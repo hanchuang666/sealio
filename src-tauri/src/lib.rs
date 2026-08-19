@@ -35,6 +35,7 @@ struct NativeStampPayload {
     stored_path: String,
     mime_type: String,
     created_at: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     bytes: Vec<u8>,
 }
 
@@ -52,6 +53,7 @@ struct WriteExportPayload {
 }
 
 const SUPPORTED_DOCUMENT_EXTENSIONS: &[&str] = &["pdf", "png", "jpg", "jpeg"];
+const SUPPORTED_STAMP_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
 
 fn app_storage_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|error| error.to_string())
@@ -102,7 +104,7 @@ fn ensure_storage(app: &AppHandle) -> Result<(), String> {
 fn read_history(app: &AppHandle) -> Result<Vec<HistoryStamp>, String> {
     ensure_storage(app)?;
     let raw = fs::read_to_string(history_path(app)?).map_err(|error| error.to_string())?;
-    Ok(serde_json::from_str(&raw).unwrap_or_default())
+    serde_json::from_str(&raw).map_err(|error| format!("图章历史数据损坏：{error}"))
 }
 
 fn write_history(app: &AppHandle, history: &[HistoryStamp]) -> Result<(), String> {
@@ -136,15 +138,15 @@ fn read_file_payload(path: &Path) -> Result<NativeFilePayload, String> {
     })
 }
 
-fn stamp_payload(stamp: &HistoryStamp) -> Result<NativeStampPayload, String> {
-    Ok(NativeStampPayload {
+fn stamp_payload(stamp: &HistoryStamp) -> NativeStampPayload {
+    NativeStampPayload {
         id: stamp.id.clone(),
         original_name: stamp.original_name.clone(),
         stored_path: stamp.stored_path.clone(),
         mime_type: stamp.mime_type.clone(),
         created_at: stamp.created_at,
         bytes: Vec::new(),
-    })
+    }
 }
 
 fn now_millis() -> u64 {
@@ -187,6 +189,7 @@ fn open_document() -> Result<Option<Vec<NativeFilePayload>>, String> {
 
     let files = paths
         .iter()
+        .filter(|path| is_supported_document_path(path))
         .map(|path| read_file_payload(path))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(files))
@@ -218,6 +221,9 @@ fn upload_stamp(app: AppHandle) -> Result<Vec<NativeStampPayload>, String> {
 
     for path in paths {
         let ext = path_extension(&path);
+        if !path.is_file() || !SUPPORTED_STAMP_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let stored_path = stamp_dir(&app)?.join(format!("{id}.{ext}"));
         fs::copy(&path, &stored_path).map_err(|error| error.to_string())?;
@@ -239,16 +245,16 @@ fn upload_stamp(app: AppHandle) -> Result<Vec<NativeStampPayload>, String> {
     }
 
     write_history(&app, &history)?;
-    imported.iter().map(stamp_payload).collect()
+    Ok(imported.iter().map(stamp_payload).collect())
 }
 
 #[tauri::command]
 fn list_stamps(app: AppHandle) -> Result<Vec<NativeStampPayload>, String> {
-    read_history(&app)?
+    Ok(read_history(&app)?
         .iter()
         .filter(|stamp| Path::new(&stamp.stored_path).exists())
         .map(stamp_payload)
-        .collect()
+        .collect())
 }
 
 #[tauri::command]

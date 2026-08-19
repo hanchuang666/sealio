@@ -4,34 +4,41 @@ import json
 import mimetypes
 import os
 import shutil
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
-DATA_DIR = os.environ.get("SEALIO_DATA_DIR", "/var/lib/sealio")
+PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.environ.get("SEALIO_DATA_DIR", os.path.join(PROJECT_DIR, ".sealio-data"))
 STAMP_DIR = os.path.join(DATA_DIR, "stamps")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 STAMP_INDEX = os.path.join(DATA_DIR, "stamps.json")
 MAX_UPLOAD_BYTES = int(os.environ.get("SEALIO_MAX_UPLOAD_BYTES", str(80 * 1024 * 1024)))
 UPLOAD_TTL_SECONDS = int(os.environ.get("SEALIO_UPLOAD_TTL_SECONDS", str(24 * 60 * 60)))
+UPLOAD_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("SEALIO_UPLOAD_CLEANUP_INTERVAL_SECONDS", "60"))
 
-STAMP_EXTENSIONS = set(["png", "jpg", "jpeg"])
-DOCUMENT_EXTENSIONS = set(["pdf", "png", "jpg", "jpeg"])
+STAMP_EXTENSIONS = {"png", "jpg", "jpeg"}
+DOCUMENT_EXTENSIONS = {"pdf", "png", "jpg", "jpeg"}
+STAMP_INDEX_LOCK = threading.Lock()
+UPLOAD_CLEANUP_LOCK = threading.Lock()
+last_upload_cleanup_at = 0.0
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
 
 def ensure_storage():
     for path in [DATA_DIR, STAMP_DIR, UPLOAD_DIR]:
-        if not os.path.exists(path):
-            os.makedirs(path)
-    if not os.path.exists(STAMP_INDEX):
-        write_json_file(STAMP_INDEX, [])
+        os.makedirs(path, exist_ok=True)
+    with STAMP_INDEX_LOCK:
+        if not os.path.exists(STAMP_INDEX):
+            write_json_file(STAMP_INDEX, [])
 
 
 def read_json_file(path, fallback):
@@ -59,17 +66,30 @@ def mime_for_name(name):
     return mime_type or "application/octet-stream"
 
 
-def cleanup_uploads():
-    now = time.time()
-    for name in os.listdir(UPLOAD_DIR):
-        path = os.path.join(UPLOAD_DIR, name)
-        if not os.path.isfile(path):
-            continue
-        try:
-            if now - os.path.getmtime(path) > UPLOAD_TTL_SECONDS:
-                os.remove(path)
-        except OSError:
-            pass
+def cleanup_uploads(force=False):
+    global last_upload_cleanup_at
+    monotonic_now = time.monotonic()
+    if not force and monotonic_now - last_upload_cleanup_at < UPLOAD_CLEANUP_INTERVAL_SECONDS:
+        return
+    if not UPLOAD_CLEANUP_LOCK.acquire(blocking=False):
+        return
+    try:
+        monotonic_now = time.monotonic()
+        if not force and monotonic_now - last_upload_cleanup_at < UPLOAD_CLEANUP_INTERVAL_SECONDS:
+            return
+        now = time.time()
+        for name in os.listdir(UPLOAD_DIR):
+            path = os.path.join(UPLOAD_DIR, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                if now - os.path.getmtime(path) > UPLOAD_TTL_SECONDS:
+                    os.remove(path)
+            except OSError:
+                pass
+        last_upload_cleanup_at = monotonic_now
+    finally:
+        UPLOAD_CLEANUP_LOCK.release()
 
 
 def public_stamp_payload(item):
@@ -88,8 +108,13 @@ class SealioHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True, "service": "sealio-backend"})
             return
         if path == "/api/stamps":
-            stamps = read_json_file(STAMP_INDEX, [])
+            with STAMP_INDEX_LOCK:
+                stamps = read_json_file(STAMP_INDEX, [])
             self.send_json(200, [public_stamp_payload(item) for item in stamps])
+            return
+        if self.send_storage_file(path, "/files/stamps/", STAMP_DIR, "private, max-age=3600"):
+            return
+        if self.send_storage_file(path, "/files/uploads/", UPLOAD_DIR, "no-store"):
             return
         self.send_json(404, {"error": "Not found"})
 
@@ -105,7 +130,11 @@ class SealioHandler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "Not found"})
 
     def handle_file_upload(self, target_dir, allowed_extensions, saver):
-        content_length = int(self.headers.get("Content-Length") or "0")
+        try:
+            content_length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            self.send_json(400, {"error": "Invalid Content-Length"})
+            return
         if content_length <= 0:
             self.send_json(400, {"error": "Missing upload body"})
             return
@@ -135,15 +164,16 @@ class SealioHandler(BaseHTTPRequestHandler):
         if not isinstance(fields, list):
             fields = [fields]
 
-        saved = []
+        uploads = []
         for field in fields:
             original_name = os.path.basename(field.filename or "")
             ext = extension_for_name(original_name)
             if ext not in allowed_extensions:
                 self.send_json(400, {"error": "Unsupported file type", "file": original_name})
                 return
-            saved.append(saver(field, target_dir, original_name, ext))
+            uploads.append((field, original_name, ext))
 
+        saved = [saver(field, target_dir, original_name, ext) for field, original_name, ext in uploads]
         self.send_json(201, saved)
 
     def save_stamp(self, field, target_dir, original_name, ext):
@@ -161,9 +191,10 @@ class SealioHandler(BaseHTTPRequestHandler):
             "createdAt": int(time.time() * 1000),
             "bytes": os.path.getsize(stored_path),
         }
-        stamps = read_json_file(STAMP_INDEX, [])
-        stamps.insert(0, item)
-        write_json_file(STAMP_INDEX, stamps)
+        with STAMP_INDEX_LOCK:
+            stamps = read_json_file(STAMP_INDEX, [])
+            stamps.insert(0, item)
+            write_json_file(STAMP_INDEX, stamps)
         return public_stamp_payload(item)
 
     def save_temp_upload(self, field, target_dir, original_name, ext):
@@ -184,11 +215,36 @@ class SealioHandler(BaseHTTPRequestHandler):
             "url": "/files/uploads/%s" % stored_name,
         }
 
+    def send_storage_file(self, request_path, prefix, directory, cache_control):
+        if not request_path.startswith(prefix):
+            return False
+
+        stored_name = unquote(request_path[len(prefix) :])
+        if not stored_name or stored_name != os.path.basename(stored_name):
+            self.send_json(404, {"error": "Not found"})
+            return True
+
+        file_path = os.path.join(directory, stored_name)
+        if not os.path.isfile(file_path):
+            self.send_json(404, {"error": "Not found"})
+            return True
+
+        file_size = os.path.getsize(file_path)
+        self.send_response(200)
+        self.send_header("Content-Type", mime_for_name(stored_name))
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        with open(file_path, "rb") as source:
+            shutil.copyfileobj(source, self.wfile)
+        return True
+
     def send_json(self, status, payload):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -198,11 +254,17 @@ class SealioHandler(BaseHTTPRequestHandler):
 
 def main():
     ensure_storage()
+    cleanup_uploads(force=True)
     host = os.environ.get("SEALIO_HOST", "127.0.0.1")
     port = int(os.environ.get("SEALIO_PORT", "8081"))
     server = ThreadingHTTPServer((host, port), SealioHandler)
     print("Sealio backend listening on %s:%s" % (host, port))
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":
