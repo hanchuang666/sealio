@@ -158,7 +158,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 - React 构建产物部署到 `/var/www/sealio`。
 - Python 后端部署到 `/opt/sealio/backend/sealio_backend.py`。
 - systemd 服务名为 `sealio-backend`。
-- Nginx 监听 8080 端口，对外提供 `http://服务器IP:8080/`。
+- Nginx 监听 80 端口，对外提供 `http://服务器IP/`。
 - `/api/` 请求反向代理到 `127.0.0.1:8081`。
 - `/files/stamps/` 和 `/files/uploads/` 由 Nginx 直接读取本地文件目录。
 
