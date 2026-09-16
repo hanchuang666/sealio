@@ -129,6 +129,43 @@ class SealioHandler(BaseHTTPRequestHandler):
             return
         self.send_json(404, {"error": "Not found"})
 
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        prefix = "/api/stamps/"
+        if path.startswith(prefix):
+            stamp_id = unquote(path[len(prefix) :])
+            self.delete_stamp(stamp_id)
+            return
+        self.send_json(404, {"error": "Not found"})
+
+    def delete_stamp(self, stamp_id):
+        if not stamp_id or "/" in stamp_id or "\\" in stamp_id:
+            self.send_json(404, {"error": "Stamp not found"})
+            return
+
+        with STAMP_INDEX_LOCK:
+            stamps = read_json_file(STAMP_INDEX, [])
+            target = next((item for item in stamps if item.get("id") == stamp_id), None)
+            if target is None:
+                self.send_json(404, {"error": "Stamp not found"})
+                return
+
+            stored_name = target.get("storedName", "")
+            if not stored_name or stored_name != os.path.basename(stored_name):
+                self.send_json(500, {"error": "Invalid stored stamp path"})
+                return
+
+            stored_path = os.path.join(STAMP_DIR, stored_name)
+            try:
+                if os.path.isfile(stored_path):
+                    os.remove(stored_path)
+                write_json_file(STAMP_INDEX, [item for item in stamps if item.get("id") != stamp_id])
+            except OSError as error:
+                self.send_json(500, {"error": "Failed to delete stamp", "detail": str(error)})
+                return
+
+        self.send_json(200, {"ok": True})
+
     def handle_file_upload(self, target_dir, allowed_extensions, saver):
         try:
             content_length = int(self.headers.get("Content-Length") or "0")

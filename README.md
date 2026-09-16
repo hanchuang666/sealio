@@ -310,6 +310,7 @@ npm run package:windows
 后端能力包括：
 
 - 图章上传。
+- 图章删除。
 - 临时文件上传。
 - 图章历史元数据读取。
 - 健康检查。
@@ -319,6 +320,7 @@ npm run package:windows
 - `GET /api/health`
 - `GET /api/stamps`
 - `POST /api/stamps`
+- `DELETE /api/stamps/<id>`
 - `POST /api/uploads`
 
 部署相关文件：

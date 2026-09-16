@@ -230,6 +230,8 @@ function App() {
   const [stampHistoryView, setStampHistoryView] = React.useState<StampHistoryView>('card');
   const [stampSearchKeyword, setStampSearchKeyword] = React.useState('');
   const [isStampManagerOpen, setIsStampManagerOpen] = React.useState(false);
+  const [pendingDeleteStampId, setPendingDeleteStampId] = React.useState<string | null>(null);
+  const [isDeletingStamp, setIsDeletingStamp] = React.useState(false);
   const [zoom, setZoom] = React.useState(0.92);
   const [zoomInputValue, setZoomInputValue] = React.useState('92');
   const [isDocumentLoading, setIsDocumentLoading] = React.useState(false);
@@ -393,6 +395,12 @@ function App() {
   const pendingCloseDocument = pendingCloseDocumentId
     ? documents.find((item) => item.id === pendingCloseDocumentId) ?? null
     : null;
+  const pendingDeleteStamp = pendingDeleteStampId
+    ? stampById.get(pendingDeleteStampId) ?? null
+    : null;
+  const pendingDeletePlacementCount = pendingDeleteStampId
+    ? placements.filter((item) => item.stampId === pendingDeleteStampId).length
+    : 0;
   const dirtyDocuments = documents.filter((item) => dirtyDocumentIds.has(item.id));
   const canCreateSeamStamp = Boolean(documentFile?.kind === 'pdf' && documentFile.pages.length > 1 && contextPlacement);
 
@@ -689,6 +697,45 @@ function App() {
       setStatus(`已上传 ${next.length} 个图章`);
     } catch (error) {
       setStatus(`图章上传失败：${formatErrorMessage(error)}`);
+    }
+  }
+
+  async function deleteManagedStamp(stamp: StampAsset) {
+    if (stamp.isDerived || isDeletingStamp) return;
+    setIsDeletingStamp(true);
+    try {
+      await sealio.deleteStamp({ id: stamp.id });
+
+      const affectedDocumentIds = new Set(
+        placements.filter((placement) => placement.stampId === stamp.id).map((placement) => placement.documentId),
+      );
+      if (affectedDocumentIds.size > 0) {
+        setDirtyDocumentIds((current) => new Set([...current, ...affectedDocumentIds]));
+      }
+
+      releaseStampResources(stamp);
+      setStamps((current) => current.filter((item) => item.id !== stamp.id));
+      setPlacements((current) => current.filter((placement) => placement.stampId !== stamp.id));
+      setSelectedStampId((current) => {
+        if (current !== stamp.id) return current;
+        return visibleStamps.find((item) => item.id !== stamp.id)?.id ?? null;
+      });
+      setSelectedPlacementId((current) => {
+        if (!current) return current;
+        const selected = placements.find((placement) => placement.id === current);
+        return selected?.stampId === stamp.id ? null : current;
+      });
+      setPlacementContextMenu((current) => {
+        if (!current) return current;
+        const target = placements.find((placement) => placement.id === current.placementId);
+        return target?.stampId === stamp.id ? null : current;
+      });
+      setPendingDeleteStampId(null);
+      setStatus(`已删除图章“${displayNameWithoutExtension(stamp.originalName)}”`);
+    } catch (error) {
+      setStatus(`图章删除失败：${formatErrorMessage(error)}`);
+    } finally {
+      setIsDeletingStamp(false);
     }
   }
 
@@ -1782,19 +1829,75 @@ function App() {
                 <div className="empty-panel">{stampHistoryError}</div>
               ) : visibleStamps.length > 0 ? (
                 visibleStamps.map((stamp) => (
-                  <button
+                  <div
                     className={`managed-stamp-card ${stamp.id === selectedStampId ? 'selected' : ''}`}
                     key={stamp.id}
-                    onClick={() => setSelectedStampId(stamp.id)}
-                    title={`选择图章：${displayNameWithoutExtension(stamp.originalName)}`}
                   >
-                    <StampImage stamp={stamp} />
-                    <span>{displayNameWithoutExtension(stamp.originalName)}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="managed-stamp-select"
+                      onClick={() => setSelectedStampId(stamp.id)}
+                      title={`选择图章：${displayNameWithoutExtension(stamp.originalName)}`}
+                    >
+                      <StampImage stamp={stamp} />
+                      <span>{displayNameWithoutExtension(stamp.originalName)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="managed-stamp-delete"
+                      onClick={() => setPendingDeleteStampId(stamp.id)}
+                      title={`删除图章：${displayNameWithoutExtension(stamp.originalName)}`}
+                      aria-label={`删除图章：${displayNameWithoutExtension(stamp.originalName)}`}
+                    >
+                      删除
+                    </button>
+                  </div>
                 ))
               ) : (
                 <div className="empty-panel">还没有图章，点击“上传新图章”添加。</div>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {pendingDeleteStamp && (
+        <div
+          className="modal-backdrop stamp-delete-backdrop"
+          onClick={() => !isDeletingStamp && setPendingDeleteStampId(null)}
+        >
+          <section
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="confirm-modal-header">
+              <h2>删除图章？</h2>
+              <p>
+                将永久删除“{displayNameWithoutExtension(pendingDeleteStamp.originalName)}”，此操作无法撤销。
+                {pendingDeletePlacementCount > 0 &&
+                  ` 该图章已放置 ${pendingDeletePlacementCount} 处，删除后也会从已打开文件中移除。`}
+              </p>
+            </header>
+            <div className="confirm-modal-actions">
+              <button
+                type="button"
+                disabled={isDeletingStamp}
+                onClick={() => setPendingDeleteStampId(null)}
+                title="取消删除图章"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger-action"
+                disabled={isDeletingStamp}
+                onClick={() => deleteManagedStamp(pendingDeleteStamp)}
+                title="确认永久删除图章"
+              >
+                {isDeletingStamp ? '正在删除...' : '确认删除'}
+              </button>
             </div>
           </section>
         </div>

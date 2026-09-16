@@ -109,7 +109,7 @@ jobs:
           nginx -t
           systemctl reload nginx
 
-          curl -fsS http://127.0.0.1/api/health
+          curl -fsS http://127.0.0.1:8080/api/health
           systemctl is-active --quiet sealio-backend
           systemctl is-active --quiet nginx
 

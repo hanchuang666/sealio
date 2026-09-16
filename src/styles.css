@@ -1014,6 +1014,11 @@ input[type="range"] {
   background: #38404d;
 }
 
+.confirm-modal-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .confirm-modal-actions .danger-action {
   color: #ffffff;
   background: #c53d3d;
@@ -1075,17 +1080,12 @@ input[type="range"] {
 }
 
 .managed-stamp-card {
+  position: relative;
   min-height: 142px;
-  display: grid;
-  grid-template-rows: 88px auto;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
   color: #dce1e9;
   background: #15181e;
   border: 1px solid #303641;
   border-radius: 7px;
-  cursor: pointer;
 }
 
 .managed-stamp-card.selected {
@@ -1099,13 +1099,57 @@ input[type="range"] {
   border-radius: 5px;
 }
 
-.managed-stamp-card span {
+.managed-stamp-select {
+  width: 100%;
+  min-height: 140px;
+  display: grid;
+  grid-template-rows: 88px auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  color: inherit;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.managed-stamp-select > span:last-child {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
   text-align: center;
+}
+
+.managed-stamp-delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  padding: 5px 8px;
+  color: #ffd9d9;
+  background: rgba(91, 24, 28, 0.9);
+  border: 1px solid rgba(224, 92, 97, 0.72);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.34);
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.72;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.managed-stamp-card:hover .managed-stamp-delete,
+.managed-stamp-delete:focus-visible {
+  opacity: 1;
+}
+
+.managed-stamp-delete:hover {
+  color: #ffffff;
+  background: #c53d3d;
+}
+
+.stamp-delete-backdrop {
+  z-index: 40;
 }
 
 .placement-context-menu {

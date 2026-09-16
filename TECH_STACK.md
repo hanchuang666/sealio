@@ -59,6 +59,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 | `uploadStamp` | `POST /api/stamps` 上传图章 | Tauri 原生命令 `upload_stamp` |
 | `listStamps` | `GET /api/stamps` 获取图章元数据 | Tauri 原生命令 `list_stamps` |
 | `readStamp` | 通过图章 URL 读取 bytes | Tauri 原生命令 `read_stamp` |
+| `deleteStamp` | `DELETE /api/stamps/<id>` 删除图章 | Tauri 原生命令 `delete_stamp` |
 | `writeExport` | 浏览器下载文件 | Tauri 原生命令写入本地文件 |
 
 后续新增功能时，应优先在 `src/native.ts` 中定义统一接口，再分别补齐 Web / Tauri 的实现，避免某个客户端功能缺失。
@@ -92,6 +93,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 - `upload_stamp`：导入图章并保存到本地历史。
 - `list_stamps`：列出本地图章元数据。
 - `read_stamp`：按图章 ID 读取图章 bytes。
+- `delete_stamp`：删除本地图章文件和历史记录。
 - `pick_export_path`：选择导出路径。
 - `write_export`：写入导出文件并在文件夹中显示。
 
@@ -118,6 +120,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 | `/api/health` | `GET` | 健康检查。 |
 | `/api/stamps` | `GET` | 获取图章元数据列表。 |
 | `/api/stamps` | `POST` | 上传图章文件。 |
+| `/api/stamps/<id>` | `DELETE` | 删除图章文件及对应元数据。 |
 | `/api/uploads` | `POST` | 上传临时处理文件。 |
 | `/files/stamps/<file>` | `GET` | 图章静态访问；生产环境由 Nginx 承接。 |
 | `/files/uploads/<file>` | `GET` | 临时文件静态访问；生产环境由 Nginx 承接。 |
@@ -155,7 +158,7 @@ Sealio 是一个用于 PDF / 图片加盖图章的工具，目前同时支持：
 - React 构建产物部署到 `/var/www/sealio`。
 - Python 后端部署到 `/opt/sealio/backend/sealio_backend.py`。
 - systemd 服务名为 `sealio-backend`。
-- Nginx 监听 80 端口，对外提供 `http://服务器IP/`。
+- Nginx 监听 8080 端口，对外提供 `http://服务器IP:8080/`。
 - `/api/` 请求反向代理到 `127.0.0.1:8081`。
 - `/files/stamps/` 和 `/files/uploads/` 由 Nginx 直接读取本地文件目录。
 

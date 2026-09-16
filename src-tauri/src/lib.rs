@@ -267,6 +267,32 @@ fn read_stamp(app: AppHandle, id: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
+fn delete_stamp(app: AppHandle, id: String) -> Result<(), String> {
+    let mut history = read_history(&app)?;
+    let index = history
+        .iter()
+        .position(|stamp| stamp.id == id)
+        .ok_or_else(|| "图章不存在".to_string())?;
+    let stamp = history.remove(index);
+
+    let stored_path = PathBuf::from(&stamp.stored_path);
+    if stored_path.exists() {
+        let current_stamp_dir = stamp_dir(&app)?;
+        let legacy_stamp_dir = legacy_history_path()
+            .and_then(|path| path.parent().map(|parent| parent.join("stamps")));
+        let is_managed_path = stored_path.parent() == Some(current_stamp_dir.as_path())
+            || legacy_stamp_dir
+                .as_deref()
+                .is_some_and(|directory| stored_path.parent() == Some(directory));
+        if !is_managed_path {
+            return Err("图章存储路径无效".to_string());
+        }
+        fs::remove_file(&stored_path).map_err(|error| format!("删除图章文件失败：{error}"))?;
+    }
+    write_history(&app, &history)
+}
+
+#[tauri::command]
 fn pick_export_path(payload: PickExportPathPayload) -> Result<Option<String>, String> {
     Ok(FileDialog::new()
         .set_title("导出新文件")
@@ -296,6 +322,7 @@ pub fn run() {
             upload_stamp,
             list_stamps,
             read_stamp,
+            delete_stamp,
             pick_export_path,
             write_export
         ])

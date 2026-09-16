@@ -51,6 +51,10 @@ type ReadStampPayload = {
   storedPath: string;
 };
 
+type DeleteStampPayload = {
+  id: string;
+};
+
 const documentAccept = '.pdf,.png,.jpg,.jpeg';
 const stampAccept = '.png,.jpg,.jpeg';
 const supportedDocumentExtensions = new Set(['pdf', 'png', 'jpg', 'jpeg']);
@@ -234,6 +238,12 @@ export const sealio = {
     const response = await fetch(payload.storedPath);
     if (!response.ok) throw new Error('图章读取失败');
     return new Uint8Array(await response.arrayBuffer());
+  },
+  deleteStamp: async (payload: DeleteStampPayload) => {
+    if (isTauriRuntime()) return invoke<void>('delete_stamp', { id: payload.id });
+
+    const response = await fetch(`/api/stamps/${encodeURIComponent(payload.id)}`, { method: 'DELETE' });
+    await readJsonResponse<{ ok: boolean }>(response);
   },
   pickExportPath: (payload: SaveExportPayload) => {
     if (isTauriRuntime()) return invoke<string | null>('pick_export_path', { payload });
